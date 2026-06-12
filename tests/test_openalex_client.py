@@ -3,7 +3,7 @@ import pytest
 import respx
 import httpx
 from pathlib import Path
-from backend.openalex_client import OpenAlexClient, _short_id
+from backend.openalex_client import OpenAlexClient, _short_id, _FILTER_CHUNK, _chunks
 
 
 @pytest.fixture
@@ -156,3 +156,55 @@ async def test_retry_exhaustion_raises(api_key_file):
     with mock.patch("asyncio.sleep"):
         with pytest.raises(httpx.HTTPStatusError):
             await client.search_authors("test")
+
+
+def test_chunks_helper():
+    result = list(_chunks([1, 2, 3, 4, 5], 2))
+    assert result == [[1, 2], [3, 4], [5]]
+
+    result = list(_chunks([], 50))
+    assert result == []
+
+    result = list(_chunks([1, 2], 50))
+    assert result == [[1, 2]]
+
+
+@respx.mock
+async def test_get_works_by_authors_chunks_large_list(api_key_file):
+    """When author_ids exceeds FILTER_CHUNK, multiple API calls are made and results merged."""
+    call_count = 0
+
+    def handler(request):
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={
+            "results": [{"id": f"https://openalex.org/W{call_count}", "title": f"Paper {call_count}", "authorships": []}]
+        })
+
+    respx.get("https://api.openalex.org/works").mock(side_effect=handler)
+    client = OpenAlexClient(api_key_path=api_key_file)
+    # Build a list larger than FILTER_CHUNK to force chunking
+    author_ids = [f"A{i}" for i in range(_FILTER_CHUNK + 1)]
+    works = await client.get_works_by_authors(author_ids)
+    assert call_count == 2  # two chunks: FILTER_CHUNK + 1 remaining
+    assert len(works) == 2  # one result per chunk merged
+
+
+@respx.mock
+async def test_get_authors_batch_chunks_large_list(api_key_file):
+    """When author_ids exceeds FILTER_CHUNK, results from all chunks are combined."""
+    call_count = 0
+
+    def handler(request):
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={
+            "results": [{"id": f"https://openalex.org/A{call_count}00", "display_name": f"Author {call_count}", "last_known_institutions": []}]
+        })
+
+    respx.get("https://api.openalex.org/authors").mock(side_effect=handler)
+    client = OpenAlexClient(api_key_path=api_key_file)
+    author_ids = [f"A{i}" for i in range(_FILTER_CHUNK + 1)]
+    authors = await client.get_authors_batch(author_ids)
+    assert call_count == 2
+    assert len(authors) == 2

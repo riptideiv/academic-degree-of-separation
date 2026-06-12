@@ -8,10 +8,16 @@ from backend.models import AuthorResult
 
 API_BASE = "https://api.openalex.org"
 _DEFAULT_KEY_PATH = Path(__file__).parent.parent / "api-keys.json"
+_FILTER_CHUNK = 50  # max IDs per pipe-separated filter to stay within URL limits
 
 
 def _short_id(openalex_url: str) -> str:
     return openalex_url.split("/")[-1]
+
+
+def _chunks(lst: list, n: int):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
 
 class OpenAlexClient:
@@ -76,47 +82,82 @@ class OpenAlexClient:
         return data.get("results", [])
 
     async def get_works_by_authors(self, author_ids: list[str], limit: int = 200) -> list[dict]:
-        """Fetch top works for multiple authors in one call using pipe-separated filter."""
+        """Fetch top works for multiple authors; chunks large lists to avoid URL length limits."""
         if not author_ids:
             return []
-        data = await self._get(f"{API_BASE}/works", {
-            "filter": f"authorships.author.id:{'|'.join(author_ids)}",
-            "per_page": min(limit, 200),
-            "sort": "cited_by_count:desc",
-            "select": "id,title,authorships",
-        })
-        return data.get("results", [])
+        chunk_list = list(_chunks(author_ids, _FILTER_CHUNK))
+        per_chunk = min(limit, 200)
+        results = await asyncio.gather(*[
+            self._get(f"{API_BASE}/works", {
+                "filter": f"authorships.author.id:{'|'.join(chunk)}",
+                "per_page": per_chunk,
+                "sort": "cited_by_count:desc",
+                "select": "id,title,authorships",
+            })
+            for chunk in chunk_list
+        ], return_exceptions=True)
+        combined: list[dict] = []
+        for r in results:
+            if not isinstance(r, Exception):
+                combined.extend(r.get("results", []))
+        return combined
 
     async def get_citing_works_for_works(self, work_ids: list[str], limit: int = 200) -> list[dict]:
-        """Fetch papers that cite any of the given works in one call."""
+        """Fetch papers that cite any of the given works; chunks large lists."""
         if not work_ids:
             return []
-        data = await self._get(f"{API_BASE}/works", {
-            "filter": f"cites:{'|'.join(work_ids)}",
-            "per_page": min(limit, 200),
-            "select": "id,authorships,referenced_works",
-        })
-        return data.get("results", [])
+        chunk_list = list(_chunks(work_ids, _FILTER_CHUNK))
+        per_chunk = min(limit, 200)
+        results = await asyncio.gather(*[
+            self._get(f"{API_BASE}/works", {
+                "filter": f"cites:{'|'.join(chunk)}",
+                "per_page": per_chunk,
+                "select": "id,authorships,referenced_works",
+            })
+            for chunk in chunk_list
+        ], return_exceptions=True)
+        combined: list[dict] = []
+        for r in results:
+            if not isinstance(r, Exception):
+                combined.extend(r.get("results", []))
+        return combined
 
     async def get_authors_batch(self, author_ids: list[str]) -> list[dict]:
-        """Fetch multiple author records by ID in one call."""
+        """Fetch multiple author records by ID; chunks large lists."""
         if not author_ids:
             return []
-        data = await self._get(f"{API_BASE}/authors", {
-            "filter": f"ids.openalex:{'|'.join(author_ids)}",
-            "per_page": min(len(author_ids), 200),
-            "select": "id,display_name,last_known_institutions",
-        })
-        return data.get("results", [])
+        chunk_list = list(_chunks(author_ids, _FILTER_CHUNK))
+        results = await asyncio.gather(*[
+            self._get(f"{API_BASE}/authors", {
+                "filter": f"ids.openalex:{'|'.join(chunk)}",
+                "per_page": min(len(chunk), 200),
+                "select": "id,display_name,last_known_institutions",
+            })
+            for chunk in chunk_list
+        ], return_exceptions=True)
+        combined: list[dict] = []
+        for r in results:
+            if not isinstance(r, Exception):
+                combined.extend(r.get("results", []))
+        return combined
 
     async def get_institution_authors_batch(self, institution_ids: list[str], limit: int = 200) -> list[dict]:
-        """Fetch top authors across multiple institutions in one call."""
+        """Fetch top authors across multiple institutions; chunks large lists."""
         if not institution_ids:
             return []
-        data = await self._get(f"{API_BASE}/authors", {
-            "filter": f"last_known_institutions.id:{'|'.join(institution_ids)}",
-            "per_page": min(limit, 200),
-            "sort": "works_count:desc",
-            "select": "id,display_name,last_known_institutions",
-        })
-        return data.get("results", [])
+        chunk_list = list(_chunks(institution_ids, _FILTER_CHUNK))
+        per_chunk = min(limit, 200)
+        results = await asyncio.gather(*[
+            self._get(f"{API_BASE}/authors", {
+                "filter": f"last_known_institutions.id:{'|'.join(chunk)}",
+                "per_page": per_chunk,
+                "sort": "works_count:desc",
+                "select": "id,display_name,last_known_institutions",
+            })
+            for chunk in chunk_list
+        ], return_exceptions=True)
+        combined: list[dict] = []
+        for r in results:
+            if not isinstance(r, Exception):
+                combined.extend(r.get("results", []))
+        return combined
