@@ -1,10 +1,13 @@
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from google.cloud import bigquery
 
 from backend.graph_backend import ALL_EDGE_TYPES, GraphBackend
 from backend.models import Connection
+
+log = logging.getLogger(__name__)
 
 _DATASET = "openalex-bigquery.openalex"
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -37,7 +40,9 @@ class BigQueryBackend(GraphBackend):
 
         for batch_rows in results:
             if isinstance(batch_rows, Exception):
+                log.warning("BigQuery query failed: %s", batch_rows, exc_info=batch_rows)
                 continue
+            log.debug("BigQuery query returned %d rows", len(batch_rows))
             for row in batch_rows:
                 source_id = row["source_id"]
                 target_id = row["target_id"]
@@ -57,10 +62,16 @@ class BigQueryBackend(GraphBackend):
     async def _run_query(self, sql: str, params: list) -> list:
         loop = asyncio.get_event_loop()
         job_config = bigquery.QueryJobConfig(query_parameters=params)
-        return await loop.run_in_executor(
-            _executor,
-            lambda: list(self._bq.query(sql, job_config=job_config).result()),
-        )
+
+        def _execute():
+            log.debug("Running BQ query:\n%s", sql.strip())
+            rows = list(self._bq.query(sql, job_config=job_config).result())
+            log.debug("Query returned %d rows", len(rows))
+            if rows:
+                log.debug("First row: %s", dict(rows[0]))
+            return rows
+
+        return await loop.run_in_executor(_executor, _execute)
 
     async def _query_coauthors(self, full_ids: list[str]) -> list:
         sql = f"""
