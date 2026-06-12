@@ -74,3 +74,41 @@ class OpenAlexClient:
             "sort": "works_count:desc",
         })
         return data.get("results", [])
+
+    async def get_works_by_authors(self, author_ids: list[str], limit: int = 200) -> list[dict]:
+        """Fetch top works for multiple authors in one call using pipe-separated filter."""
+        data = await self._get(f"{API_BASE}/works", {
+            "filter": f"authorships.author.id:{'|'.join(author_ids)}",
+            "per_page": min(limit, 200),
+            "sort": "cited_by_count:desc",
+            "select": "id,title,authorships",
+        })
+        return data.get("results", [])
+
+    async def get_citing_works_for_works(self, work_ids: list[str], limit: int = 200) -> list[dict]:
+        """Fetch papers that cite any of the given works in one call."""
+        data = await self._get(f"{API_BASE}/works", {
+            "filter": f"cites:{'|'.join(work_ids)}",
+            "per_page": min(limit, 200),
+            "select": "id,authorships,referenced_works",
+        })
+        return data.get("results", [])
+
+    async def get_authors_batch(self, author_ids: list[str]) -> list[dict]:
+        """Fetch multiple author records by ID in one call."""
+        data = await self._get(f"{API_BASE}/authors", {
+            "filter": f"ids.openalex:{'|'.join(author_ids)}",
+            "per_page": min(len(author_ids), 200),
+            "select": "id,display_name,last_known_institutions",
+        })
+        return data.get("results", [])
+
+    async def get_institution_authors_batch(self, institution_ids: list[str], limit: int = 200) -> list[dict]:
+        """Fetch top authors across multiple institutions in one call."""
+        data = await self._get(f"{API_BASE}/authors", {
+            "filter": f"last_known_institutions.id:{'|'.join(institution_ids)}",
+            "per_page": min(limit, 200),
+            "sort": "works_count:desc",
+            "select": "id,display_name,last_known_institutions",
+        })
+        return data.get("results", [])

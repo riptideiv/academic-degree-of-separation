@@ -106,6 +106,90 @@ async def test_edge_type_filtering():
     mock_client.get_institution_authors.assert_not_called()
 
 
+# --- get_neighbors_batch tests ---
+
+async def test_batch_coauthors():
+    mock_client = AsyncMock()
+    mock_client.get_works_by_authors.return_value = [
+        make_work("W1", "Paper AB", [("A1", "Alice"), ("A2", "Bob"), ("A3", "Carol")])
+    ]
+    mock_client.get_authors_batch.return_value = []
+
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
+    result = await backend.get_neighbors_batch(["A1", "A2"])
+
+    # A1 should see A3 as coauthor (A2 is in the frontier, filtered out)
+    a1_ids = {c.target_author_id for c in result["A1"]}
+    assert "A3" in a1_ids
+    assert "A2" not in a1_ids
+
+
+async def test_batch_citations():
+    mock_client = AsyncMock()
+    mock_client.get_works_by_authors.return_value = [
+        make_work("W1", "Original Paper", [("A1", "Alice")])
+    ]
+    mock_client.get_citing_works_for_works.return_value = [{
+        "id": "https://openalex.org/W2",
+        "authorships": [{"author": {"id": "https://openalex.org/A3", "display_name": "Carol"}}],
+        "referenced_works": ["https://openalex.org/W1"],
+    }]
+
+    backend = OpenAlexBackend(mock_client, edge_types={"citation"})
+    result = await backend.get_neighbors_batch(["A1"])
+
+    citations = [c for c in result["A1"] if c.connection_type == "citation"]
+    assert any(c.target_author_id == "A3" for c in citations)
+    assert any(c.label == "Original Paper" for c in citations)
+
+
+async def test_batch_institutions():
+    mock_client = AsyncMock()
+    mock_client.get_authors_batch.return_value = [{
+        "id": "https://openalex.org/A1",
+        "display_name": "Alice",
+        "last_known_institutions": [{"id": "https://openalex.org/I1", "display_name": "MIT"}],
+    }]
+    mock_client.get_institution_authors_batch.return_value = [{
+        "id": "https://openalex.org/A4",
+        "display_name": "Dave",
+        "last_known_institutions": [{"id": "https://openalex.org/I1", "display_name": "MIT"}],
+    }]
+
+    backend = OpenAlexBackend(mock_client, edge_types={"institution"})
+    result = await backend.get_neighbors_batch(["A1"])
+
+    inst = [c for c in result["A1"] if c.connection_type == "institution"]
+    assert any(c.target_author_id == "A4" for c in inst)
+    assert any(c.label == "MIT" for c in inst)
+
+
+async def test_batch_excludes_frontier_authors():
+    mock_client = AsyncMock()
+    # A2 (also in frontier) co-authors with A1 — should be excluded
+    mock_client.get_works_by_authors.return_value = [
+        make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob"), ("A3", "Carol")])
+    ]
+    mock_client.get_authors_batch.return_value = []
+
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
+    result = await backend.get_neighbors_batch(["A1", "A2"])
+
+    a1_ids = {c.target_author_id for c in result["A1"]}
+    assert "A2" not in a1_ids
+    assert "A3" in a1_ids
+
+
+async def test_batch_failed_subquery_returns_empty():
+    mock_client = AsyncMock()
+    mock_client.get_works_by_authors.side_effect = Exception("API error")
+    mock_client.get_authors_batch.return_value = []
+
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
+    result = await backend.get_neighbors_batch(["A1"])
+    assert result["A1"] == []
+
+
 async def test_citation_neighbors():
     mock_client = AsyncMock()
     citing_work = {
