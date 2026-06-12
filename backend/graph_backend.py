@@ -144,6 +144,7 @@ class OpenAlexBackend(GraphBackend):
             work_author_map = {
                 _short_id(a["author"]["id"]): a["author"].get("display_name", "")
                 for a in work.get("authorships", [])
+                if a.get("author") and a["author"].get("id")
             }
             frontier_in_work = [aid for aid in author_ids if aid in work_author_map]
 
@@ -168,6 +169,8 @@ class OpenAlexBackend(GraphBackend):
             for paper in citing_papers:
                 referenced = {_short_id(wid) for wid in paper.get("referenced_works", [])}
                 for authorship in paper.get("authorships", []):
+                    if not authorship.get("author") or not authorship["author"].get("id"):
+                        continue
                     citer_id = _short_id(authorship["author"]["id"])
                     if citer_id in author_set:
                         continue
