@@ -1,0 +1,107 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1117;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 2rem 1rem;
+}
+
+main { width: 100%; max-width: 800px; }
+
+header { text-align: center; margin-bottom: 2.5rem; }
+h1 { font-size: 1.8rem; font-weight: 700; color: #fff; margin-bottom: 0.5rem; }
+.subtitle { color: #888; font-size: 0.95rem; }
+
+.search-row { display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 1.5rem; }
+.researcher-field { flex: 1; }
+.researcher-field label {
+    display: block; font-size: 0.8rem; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #888; margin-bottom: 0.4rem;
+}
+.connector { padding-top: 2.2rem; color: #555; font-size: 1.2rem; }
+
+.autocomplete { position: relative; }
+
+input[type="text"] {
+    width: 100%; padding: 0.6rem 0.8rem;
+    background: #1e2130; border: 1px solid #333; border-radius: 6px;
+    color: #e0e0e0; font-size: 0.95rem; outline: none; transition: border-color 0.2s;
+}
+input[type="text"]:focus { border-color: #4a9eff; }
+
+.dropdown {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+    background: #1e2130; border: 1px solid #333; border-radius: 6px;
+    list-style: none; z-index: 100; overflow: hidden;
+}
+.dropdown:empty { display: none; }
+.dropdown li { padding: 0.6rem 0.8rem; cursor: pointer; transition: background 0.15s; }
+.dropdown li:hover { background: #2a2f45; }
+.dropdown .author-name { font-weight: 600; font-size: 0.9rem; }
+.dropdown .author-meta { font-size: 0.78rem; color: #888; margin-top: 0.1rem; }
+
+.selected-badge {
+    margin-top: 0.4rem; padding: 0.35rem 0.6rem;
+    background: #1a3a5c; border: 1px solid #2a5a8a; border-radius: 4px;
+    font-size: 0.82rem; color: #7ab8f5;
+}
+
+.edge-toggles {
+    display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+.edge-toggles-label {
+    font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888;
+}
+.edge-toggle {
+    display: flex; align-items: center; gap: 0.35rem;
+    font-size: 0.9rem; color: #ccc; cursor: pointer; user-select: none;
+}
+.edge-toggle input[type="checkbox"] { accent-color: #4a9eff; cursor: pointer; }
+
+button {
+    display: block; width: 100%; padding: 0.75rem;
+    background: #4a9eff; color: #fff; border: none; border-radius: 6px;
+    font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s, opacity 0.2s;
+}
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button:not(:disabled):hover { background: #3a8eef; }
+
+#progress-area {
+    margin-top: 1.5rem; background: #1e2130; border: 1px solid #333;
+    border-radius: 8px; padding: 1rem; font-family: monospace; font-size: 0.85rem;
+    color: #aaa; max-height: 200px; overflow-y: auto;
+}
+.progress-line { padding: 0.15rem 0; }
+
+#result-area { margin-top: 1.5rem; }
+.chain {
+    background: #1e2130; border: 1px solid #333;
+    border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem;
+}
+.chain-node { display: flex; flex-direction: column; align-items: flex-start; }
+.chain-author { font-weight: 700; font-size: 1.05rem; color: #fff; text-decoration: none; }
+.chain-author:hover { color: #4a9eff; text-decoration: underline; }
+.chain-connection {
+    display: flex; align-items: center; gap: 0.5rem;
+    margin: 0.4rem 0; padding-left: 0.5rem; color: #888; font-size: 0.85rem;
+}
+.chain-arrow { color: #4a9eff; font-size: 1.1rem; }
+.chain-label { font-style: italic; color: #666; }
+.chain-label a { color: #7ab8f5; text-decoration: none; }
+.chain-label a:hover { text-decoration: underline; }
+
+#reset-btn { background: #2a2f45; color: #aaa; font-weight: 400; }
+#reset-btn:not(:disabled):hover { background: #343a55; color: #e0e0e0; }
+
+.chain-hop-label { color: #888; font-size: 0.85rem; margin-top: 0.5rem; text-align: center; }
+
+.error-message {
+    color: #ff6b6b; background: #2a1a1a; border: 1px solid #553333;
+    border-radius: 6px; padding: 0.75rem 1rem; margin-top: 1rem;
+}
+.hidden { display: none !important; }
