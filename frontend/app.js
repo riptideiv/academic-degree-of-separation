@@ -1,4 +1,6 @@
 (function () {
+    const API_BASE = window.RESEARCHER_API_BASE ?? '';
+
     let selectedA = null, selectedB = null, activeSource = null;
 
     const inputA = document.getElementById('input-a');
@@ -30,7 +32,7 @@
     async function searchAuthors(query) {
         if (query.length < 2) return [];
         try {
-            const resp = await fetch(`/api/authors?q=${encodeURIComponent(query)}`);
+            const resp = await fetch(`${API_BASE}/api/authors?q=${encodeURIComponent(query)}`);
             if (!resp.ok) return [];
             return await resp.json();
         } catch { return []; }
@@ -117,7 +119,7 @@
 
         const params = new URLSearchParams({ from: selectedA.id, to: selectedB.id });
         enabledEdges.forEach(e => params.append('edges', e));
-        const url = `/api/path?${params}`;
+        const url = `${API_BASE}/api/path?${params}`;
         const source = new EventSource(url);
         activeSource = source;
 

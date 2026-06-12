@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -22,12 +23,17 @@ def _chunks(lst: list, n: int):
 
 class OpenAlexClient:
     def __init__(self, api_key_path: Path | None = None):
-        path = api_key_path or _DEFAULT_KEY_PATH
-        self._api_key = json.loads(path.read_text())["openalex-key"]
+        api_key = os.environ.get("OPENALEX_KEY")
+        if not api_key:
+            path = api_key_path or _DEFAULT_KEY_PATH
+            if path.exists():
+                api_key = json.loads(path.read_text()).get("openalex-key", "")
+        self._api_key = api_key or ""
         self._semaphore = asyncio.Semaphore(5)
 
     async def _get(self, url: str, params: dict) -> dict:
-        params = {**params, "api_key": self._api_key}
+        if self._api_key:
+            params = {**params, "api_key": self._api_key}
         for attempt in range(3):
             async with self._semaphore:
                 async with httpx.AsyncClient() as client:
