@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, Query
@@ -20,7 +21,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_KEY_PATH = Path(__file__).parent.parent / "api-keys.json"
+_keys: dict = json.loads(_KEY_PATH.read_text()) if _KEY_PATH.exists() else {}
+
 _client = OpenAlexClient()
+_BACKEND = os.environ.get("BACKEND", "openalex")
+
+
+def _make_backend(edge_types: set[str]):
+    if _BACKEND == "bigquery":
+        from backend.bigquery_backend import BigQueryBackend
+        project = _keys.get("gcp-project") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+        if not project:
+            raise RuntimeError(
+                "BigQuery backend requires gcp-project in api-keys.json "
+                "or GOOGLE_CLOUD_PROJECT env var"
+            )
+        return BigQueryBackend(project, edge_types=edge_types)
+    return OpenAlexBackend(_client, edge_types=edge_types)
 
 
 @app.get("/api/authors", response_model=list[AuthorResult])
@@ -46,7 +64,7 @@ async def get_path(
             yield f"event: app_error\ndata: {json.dumps({'message': str(exc)})}\n\n"
             return
 
-        backend = OpenAlexBackend(_client, edge_types=edge_types)
+        backend = _make_backend(edge_types)
         try:
             async for event in find_path(backend, from_id, from_name, to_id, to_name):
                 event_type = event.get("type", "progress")

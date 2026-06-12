@@ -10,6 +10,17 @@ class GraphBackend(ABC):
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         pass
 
+    async def get_neighbors_batch(self, author_ids: list[str]) -> dict[str, list[Connection]]:
+        """Expand all author_ids concurrently. Override for bulk-query backends."""
+        results = await asyncio.gather(
+            *[self.get_neighbors(aid) for aid in author_ids],
+            return_exceptions=True,
+        )
+        return {
+            aid: ([] if isinstance(r, Exception) else r)
+            for aid, r in zip(author_ids, results)
+        }
+
 
 ALL_EDGE_TYPES = {"coauthor", "citation", "institution"}
 

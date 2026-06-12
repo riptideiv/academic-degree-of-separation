@@ -8,8 +8,8 @@ from backend.openalex_client import OpenAlexClient, _short_id
 
 @pytest.fixture
 def api_key_file(tmp_path):
-    f = tmp_path / "openalex-api-key.json"
-    f.write_text(json.dumps({"key": "test_key"}))
+    f = tmp_path / "api-keys.json"
+    f.write_text(json.dumps({"openalex-key": "test_key"}))
     return f
 
 

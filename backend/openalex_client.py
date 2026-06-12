@@ -7,7 +7,7 @@ import httpx
 from backend.models import AuthorResult
 
 API_BASE = "https://api.openalex.org"
-_DEFAULT_KEY_PATH = Path(__file__).parent.parent / "openalex-api-key.json"
+_DEFAULT_KEY_PATH = Path(__file__).parent.parent / "api-keys.json"
 
 
 def _short_id(openalex_url: str) -> str:
@@ -17,7 +17,7 @@ def _short_id(openalex_url: str) -> str:
 class OpenAlexClient:
     def __init__(self, api_key_path: Path | None = None):
         path = api_key_path or _DEFAULT_KEY_PATH
-        self._api_key = json.loads(path.read_text())["key"]
+        self._api_key = json.loads(path.read_text())["openalex-key"]
         self._semaphore = asyncio.Semaphore(5)
 
     async def _get(self, url: str, params: dict) -> dict:

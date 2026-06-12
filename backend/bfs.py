@@ -1,4 +1,3 @@
-import asyncio
 from typing import AsyncIterator
 
 from backend.graph_backend import GraphBackend
@@ -63,16 +62,13 @@ async def find_path(
             ),
         }
 
-        tasks = [backend.get_neighbors(nid) for nid in frontier]
-        all_neighbors = await asyncio.gather(*tasks, return_exceptions=True)
+        neighbor_map = await backend.get_neighbors_batch(list(frontier))
 
         new_frontier: set[str] = set()
         meetings: list[str] = []  # all meeting candidates found in this level
 
-        for node_id, neighbors_or_exc in zip(frontier, all_neighbors):
-            if isinstance(neighbors_or_exc, Exception):
-                continue
-            for conn in neighbors_or_exc:
+        for node_id in frontier:
+            for conn in neighbor_map.get(node_id, []):
                 nid = conn.target_author_id
                 names[nid] = conn.target_name
 
