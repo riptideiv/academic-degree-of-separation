@@ -1,107 +1,179 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #0f1117;
-    color: #e0e0e0;
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    padding: 2rem 1rem;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: #f5f5f5;
+  color: #1a1a1a;
 }
 
-main { width: 100%; max-width: 800px; }
-
-header { text-align: center; margin-bottom: 2.5rem; }
-h1 { font-size: 1.8rem; font-weight: 700; color: #fff; margin-bottom: 0.5rem; }
-.subtitle { color: #888; font-size: 0.95rem; }
-
-.search-row { display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 1.5rem; }
-.researcher-field { flex: 1; }
-.researcher-field label {
-    display: block; font-size: 0.8rem; text-transform: uppercase;
-    letter-spacing: 0.05em; color: #888; margin-bottom: 0.4rem;
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+#sidebar {
+  width: 260px;
+  min-width: 220px;
+  background: #fff;
+  border-right: 1px solid #e0e0e0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
 }
-.connector { padding-top: 2.2rem; color: #555; font-size: 1.2rem; }
 
-.autocomplete { position: relative; }
-
-input[type="text"] {
-    width: 100%; padding: 0.6rem 0.8rem;
-    background: #1e2130; border: 1px solid #333; border-radius: 6px;
-    color: #e0e0e0; font-size: 0.95rem; outline: none; transition: border-color 0.2s;
+.sidebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #bbb;
 }
-input[type="text"]:focus { border-color: #4a9eff; }
+
+/* ── Search ──────────────────────────────────────────────────────────────── */
+#search-wrapper { position: relative; }
+
+#search-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  color: #1a1a1a;
+  background: #fff;
+}
+#search-input:focus { border-color: #222; }
 
 .dropdown {
-    position: absolute; top: calc(100% + 4px); left: 0; right: 0;
-    background: #1e2130; border: 1px solid #333; border-radius: 6px;
-    list-style: none; z-index: 100; overflow: hidden;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0; right: 0;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  list-style: none;
+  z-index: 100;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.10);
+  max-height: 220px;
+  overflow-y: auto;
 }
 .dropdown:empty { display: none; }
-.dropdown li { padding: 0.6rem 0.8rem; cursor: pointer; transition: background 0.15s; }
-.dropdown li:hover { background: #2a2f45; }
-.dropdown .author-name { font-weight: 600; font-size: 0.9rem; }
-.dropdown .author-meta { font-size: 0.78rem; color: #888; margin-top: 0.1rem; }
+.dropdown li {
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+  border-bottom: 1px solid #f5f5f5;
+}
+.dropdown li:last-child { border-bottom: none; }
+.dropdown li:hover { background: #f5f5f5; }
 
-.selected-badge {
-    margin-top: 0.4rem; padding: 0.35rem 0.6rem;
-    background: #1a3a5c; border: 1px solid #2a5a8a; border-radius: 4px;
-    font-size: 0.82rem; color: #7ab8f5;
+/* ── Origin chips ────────────────────────────────────────────────────────── */
+#origin-chips { display: flex; flex-direction: column; gap: 3px; min-height: 0; }
+
+.researcher-chip {
+  padding: 5px 8px;
+  background: #f0f0f0;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.edge-toggles {
-    display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;
-    flex-wrap: wrap;
+/* ── Section labels ──────────────────────────────────────────────────────── */
+.section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #bbb;
+  margin-top: 4px;
 }
-.edge-toggles-label {
-    font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888;
-}
-.edge-toggle {
-    display: flex; align-items: center; gap: 0.35rem;
-    font-size: 0.9rem; color: #ccc; cursor: pointer; user-select: none;
-}
-.edge-toggle input[type="checkbox"] { accent-color: #4a9eff; cursor: pointer; }
 
-button {
-    display: block; width: 100%; padding: 0.75rem;
-    background: #4a9eff; color: #fff; border: none; border-radius: 6px;
-    font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s, opacity 0.2s;
+/* ── Edge toggles ────────────────────────────────────────────────────────── */
+#edge-toggles { display: flex; flex-direction: column; gap: 5px; }
+#edge-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #555;
+  cursor: pointer;
 }
-button:disabled { opacity: 0.4; cursor: not-allowed; }
-button:not(:disabled):hover { background: #3a8eef; }
+#edge-toggles input[type="checkbox"] { accent-color: #222; cursor: pointer; }
 
-#progress-area {
-    margin-top: 1.5rem; background: #1e2130; border: 1px solid #333;
-    border-radius: 8px; padding: 1rem; font-family: monospace; font-size: 0.85rem;
-    color: #aaa; max-height: 200px; overflow-y: auto;
+/* ── Node detail panel ───────────────────────────────────────────────────── */
+#node-detail {
+  border-top: 1px solid #f0f0f0;
+  padding-top: 10px;
+  margin-top: 4px;
 }
-.progress-line { padding: 0.15rem 0; }
-
-#result-area { margin-top: 1.5rem; }
-.chain {
-    background: #1e2130; border: 1px solid #333;
-    border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem;
+#node-detail h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: 5px;
+  line-height: 1.3;
 }
-.chain-node { display: flex; flex-direction: column; align-items: flex-start; }
-.chain-author { font-weight: 700; font-size: 1.05rem; color: #fff; text-decoration: none; }
-.chain-author:hover { color: #4a9eff; text-decoration: underline; }
-.chain-connection {
-    display: flex; align-items: center; gap: 0.5rem;
-    margin: 0.4rem 0; padding-left: 0.5rem; color: #888; font-size: 0.85rem;
+#node-detail div {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 3px;
 }
-.chain-arrow { color: #4a9eff; font-size: 1.1rem; }
-.chain-label { font-style: italic; color: #666; }
-.chain-label a { color: #7ab8f5; text-decoration: none; }
-.chain-label a:hover { text-decoration: underline; }
-
-#reset-btn { background: #2a2f45; color: #aaa; font-weight: 400; }
-#reset-btn:not(:disabled):hover { background: #343a55; color: #e0e0e0; }
-
-.chain-hop-label { color: #888; font-size: 0.85rem; margin-top: 0.5rem; text-align: center; }
-
-.error-message {
-    color: #ff6b6b; background: #2a1a1a; border: 1px solid #553333;
-    border-radius: 6px; padding: 0.75rem 1rem; margin-top: 1rem;
+#node-detail a {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #333;
+  text-decoration: underline;
 }
+
+/* ── Graph area ──────────────────────────────────────────────────────────── */
+#graph-area {
+  flex: 1;
+  position: relative;
+  background: #fafafa;
+}
+
+#cy { width: 100%; height: 100%; }
+
+/* ── Progress overlay ────────────────────────────────────────────────────── */
+#progress-overlay {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 7px 16px;
+  font-size: 12px;
+  color: #555;
+  z-index: 50;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
 .hidden { display: none !important; }
+
+/* ── Hover tooltip ───────────────────────────────────────────────────────── */
+#cy-tooltip {
+  position: fixed;
+  background: rgba(18, 18, 18, 0.90);
+  color: #f0f0f0;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.6;
+  pointer-events: none;
+  z-index: 9999;
+  max-width: 240px;
+  word-wrap: break-word;
+  display: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}

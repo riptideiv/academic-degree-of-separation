@@ -87,7 +87,7 @@ class OpenAlexClient:
         })
         return data.get("results", [])
 
-    async def get_works_by_authors(self, author_ids: list[str], limit: int = 200) -> list[dict]:
+    async def get_works_by_authors(self, author_ids: list[str], limit: int = 50) -> list[dict]:
         """Fetch top works for multiple authors; chunks large lists to avoid URL length limits."""
         if not author_ids:
             return []
@@ -108,7 +108,7 @@ class OpenAlexClient:
                 combined.extend(r.get("results", []))
         return combined
 
-    async def get_citing_works_for_works(self, work_ids: list[str], limit: int = 200) -> list[dict]:
+    async def get_citing_works_for_works(self, work_ids: list[str], limit: int = 50) -> list[dict]:
         """Fetch papers that cite any of the given works; chunks large lists."""
         if not work_ids:
             return []
@@ -118,6 +118,7 @@ class OpenAlexClient:
             self._get(f"{API_BASE}/works", {
                 "filter": f"cites:{'|'.join(chunk)}",
                 "per_page": per_chunk,
+                "sort": "cited_by_count:desc",
                 "select": "id,authorships,referenced_works",
             })
             for chunk in chunk_list
@@ -137,7 +138,7 @@ class OpenAlexClient:
             self._get(f"{API_BASE}/authors", {
                 "filter": f"ids.openalex:{'|'.join(chunk)}",
                 "per_page": min(len(chunk), 200),
-                "select": "id,display_name,last_known_institutions",
+                "select": "id,display_name,last_known_institutions,cited_by_count,works_count",
             })
             for chunk in chunk_list
         ], return_exceptions=True)
@@ -147,7 +148,7 @@ class OpenAlexClient:
                 combined.extend(r.get("results", []))
         return combined
 
-    async def get_institution_authors_batch(self, institution_ids: list[str], limit: int = 200) -> list[dict]:
+    async def get_institution_authors_batch(self, institution_ids: list[str], limit: int = 50) -> list[dict]:
         """Fetch top authors across multiple institutions; chunks large lists."""
         if not institution_ids:
             return []
@@ -157,8 +158,8 @@ class OpenAlexClient:
             self._get(f"{API_BASE}/authors", {
                 "filter": f"last_known_institutions.id:{'|'.join(chunk)}",
                 "per_page": per_chunk,
-                "sort": "works_count:desc",
-                "select": "id,display_name,last_known_institutions",
+                "sort": "cited_by_count:desc",
+                "select": "id,display_name,last_known_institutions,cited_by_count,works_count",
             })
             for chunk in chunk_list
         ], return_exceptions=True)

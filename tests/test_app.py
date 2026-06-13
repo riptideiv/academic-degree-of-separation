@@ -76,7 +76,7 @@ async def test_path_sse_passes_edge_types_to_backend():
         yield {"type": "result", "found": False, "reason": "No path found"}
 
     class CapturingBackend:
-        def __init__(self, client, edge_types=None):
+        def __init__(self, client, edge_types=None, **kwargs):
             captured["edge_types"] = edge_types
 
         async def get_neighbors(self, author_id):

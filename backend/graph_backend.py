@@ -29,9 +29,18 @@ ALL_EDGE_TYPES = {"coauthor", "citation", "institution"}
 
 
 class OpenAlexBackend(GraphBackend):
-    def __init__(self, client: OpenAlexClient, edge_types: set[str] | None = None):
+    def __init__(
+        self,
+        client: OpenAlexClient,
+        edge_types: set[str] | None = None,
+        neighbor_cache: dict | None = None,
+    ):
         self._client = client
         self._edge_types = edge_types if edge_types is not None else ALL_EDGE_TYPES
+        # Shared ring cache: author_id → list[Connection] (all edge types).
+        # Populated with ALL_EDGE_TYPES so each ring is fetched once and reused
+        # across requests regardless of which edge types are currently active.
+        self._cache: dict[str, list[Connection]] = neighbor_cache if neighbor_cache is not None else {}
 
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         tasks = []
@@ -104,15 +113,30 @@ class OpenAlexBackend(GraphBackend):
 
     async def get_neighbors_batch(self, author_ids: list[str]) -> dict[str, list[Connection]]:
         """
-        Batch expansion: 2-4 API calls for the entire frontier regardless of size.
-        Co-author + citation share one works fetch; institution is a parallel pair.
+        Return neighbors for all author_ids, using the ring cache where available.
+        Uncached authors are fetched with ALL_EDGE_TYPES and stored; results are then
+        filtered to self._edge_types before returning.
         """
-        tasks = []
-        if "coauthor" in self._edge_types or "citation" in self._edge_types:
-            tasks.append(self._batch_works_connections(author_ids))
-        if "institution" in self._edge_types:
-            tasks.append(self._batch_institutions(author_ids))
+        uncached = [aid for aid in author_ids if aid not in self._cache]
 
+        if uncached:
+            fresh = await self._fetch_neighbors_batch(uncached)
+            self._cache.update(fresh)
+
+        return {
+            aid: [c for c in self._cache.get(aid, []) if c.connection_type in self._edge_types]
+            for aid in author_ids
+        }
+
+    async def _fetch_neighbors_batch(self, author_ids: list[str]) -> dict[str, list[Connection]]:
+        """
+        Fetch ALL connection types for the given authors (no cache check).
+        Always uses ALL_EDGE_TYPES so each stored ring is complete.
+        """
+        tasks = [
+            self._batch_works_connections(author_ids, edge_types=ALL_EDGE_TYPES),
+            self._batch_institutions(author_ids),
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         by_source: dict[str, list[Connection]] = {aid: [] for aid in author_ids}
@@ -130,8 +154,11 @@ class OpenAlexBackend(GraphBackend):
 
         return by_source
 
-    async def _batch_works_connections(self, author_ids: list[str]) -> dict[str, list[Connection]]:
+    async def _batch_works_connections(
+        self, author_ids: list[str], *, edge_types: set[str] | None = None
+    ) -> dict[str, list[Connection]]:
         """Fetch works for all frontier authors once; derive co-author and citation edges."""
+        et = edge_types if edge_types is not None else self._edge_types
         author_set = set(author_ids)
         by_source: dict[str, list[Connection]] = {aid: [] for aid in author_ids}
 
@@ -148,7 +175,7 @@ class OpenAlexBackend(GraphBackend):
             }
             frontier_in_work = [aid for aid in author_ids if aid in work_author_map]
 
-            if "coauthor" in self._edge_types:
+            if "coauthor" in et:
                 for src_id in frontier_in_work:
                     for coauthor_id, coauthor_name in work_author_map.items():
                         if coauthor_id not in author_set:
@@ -159,10 +186,10 @@ class OpenAlexBackend(GraphBackend):
                                 label=title,
                             ))
 
-            if "citation" in self._edge_types and frontier_in_work:
+            if "citation" in et and frontier_in_work:
                 work_to_sources[work_id] = (title, frontier_in_work)
 
-        if "citation" in self._edge_types and work_to_sources:
+        if "citation" in et and work_to_sources:
             citing_papers = await self._client.get_citing_works_for_works(
                 list(work_to_sources.keys())[:50]
             )
@@ -199,7 +226,7 @@ class OpenAlexBackend(GraphBackend):
             src_id = _short_id(author["id"])
             if src_id not in author_set:
                 continue
-            for inst in author.get("last_known_institutions", []):
+            for inst in (author.get("last_known_institutions") or []):
                 inst_id = _short_id(inst["id"])
                 inst_name = inst.get("display_name", "Unknown institution")
                 if inst_id not in inst_to_sources:
@@ -215,7 +242,7 @@ class OpenAlexBackend(GraphBackend):
             if colleague_id in author_set:
                 continue
             colleague_name = colleague.get("display_name", "")
-            for inst in colleague.get("last_known_institutions", []):
+            for inst in (colleague.get("last_known_institutions") or []):
                 inst_id = _short_id(inst["id"])
                 if inst_id in inst_to_sources:
                     inst_name, src_ids = inst_to_sources[inst_id]

@@ -1,56 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Researcher Degree of Separation</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Researcher Degree of Separation</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 </head>
 <body>
-    <main>
-        <header>
-            <h1>Researcher Degree of Separation</h1>
-            <p class="subtitle">Find how any two researchers are connected through co-authorship, citations, and institutions</p>
-        </header>
+  <div id="sidebar">
+    <h2 class="sidebar-title">Researchers</h2>
 
-        <section id="search-form">
-            <div class="search-row">
-                <div class="researcher-field" id="field-a">
-                    <label for="input-a">Researcher A</label>
-                    <div class="autocomplete">
-                        <input type="text" id="input-a" placeholder="Type a name..." autocomplete="off">
-                        <ul class="dropdown" id="dropdown-a"></ul>
-                    </div>
-                    <div class="selected-badge hidden" id="badge-a"></div>
-                </div>
-                <div class="connector">→</div>
-                <div class="researcher-field" id="field-b">
-                    <label for="input-b">Researcher B</label>
-                    <div class="autocomplete">
-                        <input type="text" id="input-b" placeholder="Type a name..." autocomplete="off">
-                        <ul class="dropdown" id="dropdown-b"></ul>
-                    </div>
-                    <div class="selected-badge hidden" id="badge-b"></div>
-                </div>
-            </div>
-            <div class="edge-toggles">
-                <span class="edge-toggles-label">Edge types</span>
-                <label class="edge-toggle"><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>
-                <label class="edge-toggle"><input type="checkbox" id="edge-citation" checked> Citations</label>
-                <label class="edge-toggle"><input type="checkbox" id="edge-institution" checked> Shared institution</label>
-            </div>
-            <button id="find-btn" disabled>Find Connection</button>
-        </section>
+    <div id="search-wrapper">
+      <input type="text" id="search-input" placeholder="Add a researcher…" autocomplete="off">
+      <ul id="search-dropdown" class="dropdown"></ul>
+    </div>
 
-        <section id="progress-area" class="hidden">
-            <div id="progress-log"></div>
-        </section>
+    <div id="origin-chips"></div>
 
-        <section id="result-area" class="hidden">
-            <div id="path-chain"></div>
-            <button id="reset-btn">↩ Search again</button>
-        </section>
-    </main>
-    <script src="app.js"></script>
+    <div class="section-label">Edge types</div>
+    <div id="edge-toggles">
+      <label><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>
+      <label><input type="checkbox" id="edge-citation" checked> Citations</label>
+      <label><input type="checkbox" id="edge-institution" checked> Institution</label>
+    </div>
+
+    <div id="node-detail" class="hidden">
+      <h3 id="detail-name"></h3>
+      <div id="detail-meta"></div>
+      <a id="detail-link" href="#" target="_blank" rel="noopener">View on OpenAlex →</a>
+    </div>
+  </div>
+
+  <div id="graph-area">
+    <div id="progress-overlay" class="hidden">
+      <span id="progress-text">Loading…</span>
+    </div>
+    <div id="cy"></div>
+  </div>
+
+  <script src="app.js"></script>
 </body>
 </html>
