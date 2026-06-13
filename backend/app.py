@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.bfs import find_path
 from backend.graph_backend import ALL_EDGE_TYPES, OpenAlexBackend
 from backend.models import AuthorResult
-from backend.openalex_client import OpenAlexClient
+from backend.openalex_client import OpenAlexClient, _short_id
 
 log = logging.getLogger(__name__)
 
@@ -59,16 +59,26 @@ async def _collect_path(
     from_id: str,
     from_name: str,
     to_id: str,
-) -> tuple[list[dict], list[dict]]:
-    """Run bidirectional BFS; return (graph_nodes, graph_edges) for the found path."""
+) -> dict:
+    """Run bidirectional BFS; return the found path's nodes/edges plus hop count.
+
+    The returned dict carries the graph elements as well as the degree-of-separation
+    metadata (found, hops, and both endpoint names) so the caller can emit a `path`
+    SSE event without re-deriving any of it.
+    """
     to_author = await _client.get_author(to_id)
     to_name = to_author.get("display_name", to_id)
 
     nodes: list[dict] = []
     edges: list[dict] = []
+    steps: list[dict] = []   # ordered hops along the path (names + paper/label)
+    found = False
+    hops: int | None = None
 
     async for event in find_path(backend, from_id, from_name, to_id, to_name):
         if event.get("type") == "result" and event.get("found"):
+            found = True
+            hops = event.get("hops")
             path = event["path"]
             for i, step in enumerate(path):
                 is_endpoint = step["author_id"] in (from_id, to_id)
@@ -82,14 +92,44 @@ async def _collect_path(
                     "depth": 0,
                 })
                 if i < len(path) - 1 and step.get("connection_to_next"):
+                    nxt = path[i + 1]
                     edges.append({
                         "source": step["author_id"],
-                        "target": path[i + 1]["author_id"],
+                        "target": nxt["author_id"],
+                        "type": step["connection_to_next"],
+                        "label": step.get("label", ""),
+                    })
+                    steps.append({
+                        "from_name": step["author_name"],
+                        "to_name": nxt["author_name"],
                         "type": step["connection_to_next"],
                         "label": step.get("label", ""),
                     })
 
-    return nodes, edges
+    # The BFS only knows author ids + names, so path nodes would otherwise render
+    # as "0 works · 0 citations" with no institution. Backfill real metadata in a
+    # single batched lookup before returning.
+    if nodes:
+        authors = await _client.get_authors_batch([n["id"] for n in nodes])
+        meta = {_short_id(a["id"]): a for a in authors}
+        for n in nodes:
+            a = meta.get(n["id"])
+            if a:
+                n["institution"] = _get_inst(a)
+                n["works_count"] = a.get("works_count", 0)
+                n["cited_by_count"] = a.get("cited_by_count", 0)
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "steps": steps,
+        "found": found,
+        "hops": hops,
+        "from_id": from_id,
+        "from_name": from_name,
+        "to_id": to_id,
+        "to_name": to_name,
+    }
 
 
 @app.get("/api/authors", response_model=list[AuthorResult])
@@ -136,6 +176,8 @@ async def graph_expand(
     origin_ids: str = Query(default=""),   # comma-sep existing origin IDs
     path_ids: str = Query(default=""),     # comma-sep existing path node IDs from client
     edges: list[str] = Query(default=list(ALL_EDGE_TYPES)),
+    depth: int = Query(default=2, ge=0, le=4),   # neighborhood expansion depth (0 = path only)
+    top_k: int = Query(default=8, ge=1, le=25),  # neighbors kept per expansion level
 ):
     from backend.graph_expand import expand_graph
 
@@ -179,24 +221,32 @@ async def graph_expand(
                 if isinstance(result, Exception):
                     log.warning("Path finding failed: %s", result)
                     continue
-                p_nodes, p_edges = result
-                for n in p_nodes:
+                for n in result["nodes"]:
                     if n["type"] == "path":
                         new_path_node_ids.append(n["id"])
                     yield f"event: node\ndata: {json.dumps(n)}\n\n"
-                for e in p_edges:
+                for e in result["edges"]:
                     yield f"event: edge\ndata: {json.dumps(e)}\n\n"
+                path_event = {
+                    k: result[k]
+                    for k in ("from_id", "from_name", "to_id", "to_name", "hops", "found", "steps")
+                }
+                yield f"event: path\ndata: {json.dumps(path_event)}\n\n"
 
-        # BFS expansion from all origins + all path nodes (new and previously known)
+        # Balanced expansion around each researcher of interest (the origins). The
+        # connecting-path nodes are passed as already-seen so they aren't re-grown.
         all_origins = [new_id] + existing_origins
         all_path_nodes = list(set(new_path_node_ids + existing_path_ids))
-        start_nodes = all_origins + all_path_nodes
 
-        yield f"event: progress\ndata: {json.dumps({'message': 'Building neighborhood graph…'})}\n\n"
+        if depth > 0:
+            yield f"event: progress\ndata: {json.dumps({'message': 'Building neighborhood graph…'})}\n\n"
 
-        async for event in expand_graph(backend, _client, start_nodes):
-            event_type = event.get("type", "progress")
-            yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+            async for event in expand_graph(
+                backend, _client, all_origins,
+                max_depth=depth, top_k=top_k, bridge_ids=all_path_nodes,
+            ):
+                event_type = event.get("type", "progress")
+                yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
         yield f"event: done\ndata: {{}}\n\n"
 
