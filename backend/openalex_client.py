@@ -23,21 +23,49 @@ def _chunks(lst: list, n: int):
 
 class OpenAlexClient:
     def __init__(self, api_key_path: Path | None = None):
-        api_key = os.environ.get("OPENALEX_KEY")
-        if not api_key:
-            path = api_key_path or _DEFAULT_KEY_PATH
-            if path.exists():
-                api_key = json.loads(path.read_text()).get("openalex-key", "")
-        self._api_key = api_key or ""
+        keys: dict = {}
+        path = api_key_path or _DEFAULT_KEY_PATH
+        if path.exists():
+            try:
+                keys = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                keys = {}
+        self._api_key = os.environ.get("OPENALEX_KEY") or keys.get("openalex-key", "") or ""
+        # OpenAlex routes requests that identify themselves (mailto / descriptive
+        # User-Agent) into a faster "polite pool" with more headroom. Configure via
+        # OPENALEX_MAILTO env var or a "mailto" entry in api-keys.json.
+        self._mailto = os.environ.get("OPENALEX_MAILTO") or keys.get("mailto", "") or ""
         self._semaphore = asyncio.Semaphore(5)
+        # One shared client → connection pooling / keep-alive across the many calls
+        # a single BFS makes. Created lazily so it binds to the running event loop.
+        self._http: httpx.AsyncClient | None = None
+
+    def _user_agent(self) -> str:
+        ua = "researcher-degree-of-separation/1.0"
+        return f"{ua} (mailto:{self._mailto})" if self._mailto else ua
+
+    async def _http_client(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=30.0, headers={"User-Agent": self._user_agent()}
+            )
+        return self._http
+
+    async def aclose(self) -> None:
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     async def _get(self, url: str, params: dict) -> dict:
+        params = dict(params)
         if self._api_key:
-            params = {**params, "api_key": self._api_key}
+            params["api_key"] = self._api_key
+        if self._mailto:
+            params.setdefault("mailto", self._mailto)
+        client = await self._http_client()
         for attempt in range(3):
             async with self._semaphore:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(url, params=params, timeout=30.0)
+                resp = await client.get(url, params=params)
             if resp.status_code == 429:
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)

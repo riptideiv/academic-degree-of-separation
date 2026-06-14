@@ -12,98 +12,171 @@ def _inst_name(author: dict) -> str | None:
     return insts[0].get("display_name") if insts else None
 
 
+def _edge_key(a: str, b: str, etype: str) -> tuple:
+    """Canonical (undirected) key so A->B and B->A dedupe to one edge."""
+    return (a, b, etype) if a <= b else (b, a, etype)
+
+
 async def expand_graph(
     backend: GraphBackend,
     client: OpenAlexClient,
-    start_node_ids: list[str],
-    max_depth: int = 3,
+    root_ids: list[str],
+    max_depth: int = 2,
     top_k: int = 10,
+    bridge_ids: list[str] | None = None,
+    bridge_top_k: int | None = None,
 ) -> AsyncIterator[dict]:
     """
-    BFS expansion from start_node_ids up to max_depth levels.
+    Balanced BFS expansion around each root (a researcher of interest).
 
-    At each depth the full ring of every frontier node is read (from the backend's
-    cache when available, fetched from the API only when not).  All candidate
-    neighbours are collected, ranked by cited_by_count, and pruned to top_k.  The
-    top_k survivors become the next frontier.
+    Each root grows its own neighborhood with its own per-level budget, so a
+    highly-connected researcher can't crowd out a sparse one in a single global
+    ranking. Neighbors shared between roots are deduplicated and bridge them.
 
-    Yields dicts with keys:
+    bridge_ids (the connecting-path nodes) are also expanded, but with a smaller
+    budget, so each middle node gains a little neighborhood of its own instead of
+    sitting as an isolated chain link.
+
+    After expansion, a stitch pass adds the real edges among all visible nodes (no new
+    nodes). Together with the bridge expansion this keeps the middle nodes connected
+    and lets the neighborhoods interconnect.
+
+    Yields:
       {"type": "progress", "message": str}
       {"type": "expansion", "depth": int, "nodes": [...], "edges": [...]}
     """
-    all_seen: set[str] = set(start_node_ids)
-    frontier: set[str] = set(start_node_ids)
+    # Origins expand with the full budget; bridges (path nodes) with a smaller one.
+    bridges = [b for b in dict.fromkeys(bridge_ids or []) if b not in set(root_ids)]
+    btk = bridge_top_k if bridge_top_k is not None else max(3, top_k // 3)
+    budget: dict[str, int] = {r: top_k for r in root_ids}
+    for b in bridges:
+        budget[b] = btk
+    all_roots = list(budget.keys())
+
+    all_seen: set[str] = set(all_roots)
+    graph_nodes: set[str] = set(all_roots)   # everything visible in the graph
+    emitted: set[tuple] = set()              # canonical edges already sent
+    frontiers: dict[str, set[str]] = {r: {r} for r in all_roots}
 
     for depth in range(1, max_depth + 1):
-        if not frontier:
+        active = [r for r in all_roots if frontiers.get(r)]
+        if not active:
             break
 
         yield {"type": "progress", "message": f"Expanding network (depth {depth}/{max_depth})…"}
 
-        # get_neighbors_batch reads from backend's ring cache where possible,
-        # fetching from OpenAlex only for authors whose rings are not yet cached.
-        neighbor_map = await backend.get_neighbors_batch(list(frontier))
+        # One batched ring read for the union of every root's frontier.
+        union_frontier: set[str] = set()
+        for r in active:
+            union_frontier |= frontiers[r]
+        neighbor_map = await backend.get_neighbors_batch(list(union_frontier))
 
-        candidates: dict[str, str] = {}   # id → name (first connection seen)
-        freq: dict[str, int] = {}         # id → number of frontier nodes that reach it
-        raw_edges: list[dict] = []
-
-        for src_id, connections in neighbor_map.items():
-            for conn in connections:
-                tgt = conn.target_author_id
-                if tgt not in all_seen:
+        # Collect candidates per root (so each gets its own budget below).
+        per_root: dict[str, dict] = {}
+        for r in active:
+            cands: dict[str, str] = {}
+            freq: dict[str, int] = {}
+            edges: list[dict] = []
+            for src in frontiers[r]:
+                for conn in neighbor_map.get(src, []):
+                    tgt = conn.target_author_id
+                    if tgt in all_seen:
+                        continue
                     freq[tgt] = freq.get(tgt, 0) + 1
-                    if tgt not in candidates:
-                        candidates[tgt] = conn.target_name
-                    raw_edges.append({
-                        "source": src_id,
+                    cands.setdefault(tgt, conn.target_name)
+                    edges.append({
+                        "source": src,
                         "target": tgt,
                         "type": conn.connection_type,
                         "label": conn.label,
                     })
+            per_root[r] = {"cands": cands, "freq": freq, "edges": edges}
 
-        if not candidates:
+        # Pre-filter each root's candidates by connection frequency before the
+        # metadata fetch (bounds how many author records we look up).
+        pre_filter = top_k * 5
+        fetch_ids: set[str] = set()
+        for r in active:
+            cands, freq = per_root[r]["cands"], per_root[r]["freq"]
+            fetch_ids |= set(sorted(cands, key=lambda a: freq.get(a, 0), reverse=True)[:pre_filter])
+
+        if not fetch_ids:
             break
 
-        # Pre-filter by connection frequency before the expensive metadata fetch.
-        # Authors connected to more frontier nodes are more central; this cap keeps
-        # get_authors_batch to at most top_k*5 IDs (one API chunk) regardless of
-        # how many raw candidates the ring queries returned.
-        pre_filter_limit = top_k * 5
-        if len(candidates) > pre_filter_limit:
-            top_by_freq = sorted(candidates, key=lambda aid: freq.get(aid, 0), reverse=True)[:pre_filter_limit]
-            candidates = {aid: candidates[aid] for aid in top_by_freq}
-            raw_edges = [e for e in raw_edges if e["target"] in candidates]
-
-        candidate_ids = list(candidates.keys())
-        author_list = await client.get_authors_batch(candidate_ids)
+        author_list = await client.get_authors_batch(list(fetch_ids))
         meta: dict[str, dict] = {_short_id(a["id"]): a for a in author_list}
 
-        ranked = sorted(
-            candidate_ids,
-            key=lambda aid: meta.get(aid, {}).get("cited_by_count", 0),
-            reverse=True,
-        )[:top_k]
-        kept = set(ranked)
+        # Rank each root's candidates by citations and keep its own budget per root.
+        next_frontiers: dict[str, set[str]] = {r: set() for r in all_roots}
+        kept_all: set[str] = set()
+        for r in active:
+            cands = per_root[r]["cands"]
+            ranked = sorted(
+                cands.keys(),
+                key=lambda a: meta.get(a, {}).get("cited_by_count", 0),
+                reverse=True,
+            )[:budget[r]]
+            next_frontiers[r] = set(ranked)
+            kept_all |= set(ranked)
 
-        nodes = [
-            {
+        # Deduped nodes for everything kept this level.
+        nodes = []
+        for aid in kept_all:
+            name = next(
+                (per_root[r]["cands"][aid] for r in active if aid in per_root[r]["cands"]),
+                aid,
+            )
+            m = meta.get(aid, {})
+            nodes.append({
                 "id": aid,
-                "name": candidates[aid],
-                "institution": _inst_name(meta.get(aid, {})),
-                "works_count": meta.get(aid, {}).get("works_count", 0),
-                "cited_by_count": meta.get(aid, {}).get("cited_by_count", 0),
+                "name": name,
+                "institution": _inst_name(m),
+                "works_count": m.get("works_count", 0),
+                "cited_by_count": m.get("cited_by_count", 0),
                 "type": "expansion",
                 "depth": depth,
-            }
-            for aid in ranked
-        ]
-        kept_edges = [e for e in raw_edges if e["target"] in kept]
+            })
 
-        yield {"type": "expansion", "depth": depth, "nodes": nodes, "edges": kept_edges}
+        # Every edge into a kept node, from any root (so bridges between roots show),
+        # deduplicated.
+        edges = []
+        for r in active:
+            for e in per_root[r]["edges"]:
+                if e["target"] not in kept_all:
+                    continue
+                k = _edge_key(e["source"], e["target"], e["type"])
+                if k not in emitted:
+                    emitted.add(k)
+                    edges.append(e)
 
-        # Mark all candidates as seen so they are never re-discovered as expansion
-        # nodes in a later depth (even the pruned ones — their rings may still get
-        # populated as a side-effect of fetching the kept nodes' rings later).
-        all_seen |= set(candidate_ids)
-        frontier = kept
+        yield {"type": "expansion", "depth": depth, "nodes": nodes, "edges": edges}
+
+        graph_nodes |= kept_all
+        # Mark all candidates seen (even pruned ones) so they aren't rediscovered.
+        for r in active:
+            all_seen |= set(per_root[r]["cands"].keys())
+        frontiers = next_frontiers
+
+    # Stitch pass: add the real edges among the visible nodes (no new nodes). This
+    # links the connecting/middle nodes into the graph and interconnects the
+    # neighborhoods, instead of leaving thin chains between two bushy hubs.
+    if graph_nodes:
+        neighbor_map = await backend.get_neighbors_batch(list(graph_nodes))
+        stitch = []
+        for src, conns in neighbor_map.items():
+            for conn in conns:
+                tgt = conn.target_author_id
+                if tgt == src or tgt not in graph_nodes:
+                    continue
+                k = _edge_key(src, tgt, conn.connection_type)
+                if k in emitted:
+                    continue
+                emitted.add(k)
+                stitch.append({
+                    "source": src,
+                    "target": tgt,
+                    "type": conn.connection_type,
+                    "label": conn.label,
+                })
+        if stitch:
+            yield {"type": "expansion", "depth": max_depth, "nodes": [], "edges": stitch}

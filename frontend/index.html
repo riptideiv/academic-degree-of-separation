@@ -6,6 +6,11 @@
   <title>Researcher Degree of Separation</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <!-- fCoSE: spectral + spring layout for cleaner node separation; it also tiles
+       disconnected neighborhoods (the 2+ researcher case) instead of overlapping them. -->
+  <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
+  <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
+  <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
 </head>
 <body>
   <div id="sidebar">
@@ -18,11 +23,39 @@
 
     <div id="origin-chips"></div>
 
+    <div id="degrees-panel" class="hidden">
+      <div class="section-label">Degrees of separation</div>
+      <ul id="degrees-list"></ul>
+    </div>
+
     <div class="section-label">Edge types</div>
     <div id="edge-toggles">
       <label><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>
       <label><input type="checkbox" id="edge-citation" checked> Citations</label>
       <label><input type="checkbox" id="edge-institution" checked> Institution</label>
+    </div>
+
+    <div class="section-label">Neighborhood</div>
+    <select id="neighborhood">
+      <option value="0,1">Just the connection</option>
+      <option value="2,6" selected>Small</option>
+      <option value="2,12">Medium</option>
+      <option value="3,16">Large</option>
+    </select>
+
+    <div class="section-label">Labels</div>
+    <div id="label-toggles">
+      <label><input type="checkbox" id="toggle-names"> Show all researcher names</label>
+    </div>
+
+    <div class="section-label">Layout</div>
+    <div id="layout-controls">
+      <label>Spacing
+        <input type="range" id="layout-spacing" min="1" max="10" step="1" value="5">
+      </label>
+      <label>Link length
+        <input type="range" id="layout-link" min="40" max="220" step="10" value="100">
+      </label>
     </div>
 
     <div id="node-detail" class="hidden">
