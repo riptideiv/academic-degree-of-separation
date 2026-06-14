@@ -95,6 +95,61 @@ async def test_path_sse_passes_edge_types_to_backend():
     assert captured["edge_types"] == {"coauthor", "institution"}
 
 
+async def test_graph_expand_emits_path_event():
+    """Adding a researcher with an existing origin streams a `path` event carrying hops."""
+    mock_path = [
+        {"author_id": "A1", "author_name": "Alice", "connection_to_next": "coauthor", "label": "Paper"},
+        {"author_id": "A2", "author_name": "Bob", "connection_to_next": None, "label": None},
+    ]
+
+    async def mock_find_path(*args, **kwargs):
+        yield {"type": "progress", "message": "Searching..."}
+        yield {"type": "result", "found": True, "path": mock_path, "hops": 1}
+
+    async def mock_expand_graph(*args, **kwargs):
+        # Empty async generator, so the test skips real neighborhood expansion.
+        return
+        yield  # pragma: no cover
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app.OpenAlexBackend"), \
+         patch("backend.graph_expand.expand_graph", mock_expand_graph):
+        mock_client.get_author = AsyncMock(side_effect=lambda aid: {
+            "display_name": {"A1": "Alice", "A2": "Bob"}.get(aid, aid)
+        })
+        # _collect_path backfills path-node metadata via a batched author lookup.
+        mock_client.get_authors_batch = AsyncMock(return_value=[])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", "/api/graph/expand?new_id=A1&origin_ids=A2") as resp:
+                assert resp.status_code == 200
+                chunks = []
+                async for chunk in resp.aiter_text():
+                    chunks.append(chunk)
+
+    full_text = "".join(chunks)
+    assert "event: path" in full_text
+
+    path_events = []
+    lines = full_text.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == "event: path":
+            data_line = lines[i + 1]
+            assert data_line.startswith("data:")
+            path_events.append(json.loads(data_line[5:].strip()))
+
+    assert len(path_events) == 1
+    pe = path_events[0]
+    assert pe["found"] is True
+    assert pe["hops"] == 1
+    assert pe["from_id"] == "A1"
+    assert pe["to_id"] == "A2"
+    # The ordered shortest-path steps (names + paper) are included for the sidebar.
+    assert pe["steps"] == [
+        {"from_name": "Alice", "to_name": "Bob", "type": "coauthor", "label": "Paper"}
+    ]
+
+
 async def test_path_sse_yields_app_error_on_exception():
     with patch("backend.app._client") as mock_client:
         mock_client.get_author = AsyncMock(side_effect=RuntimeError("API down"))
