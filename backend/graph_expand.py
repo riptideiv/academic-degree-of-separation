@@ -135,6 +135,7 @@ async def expand_graph(
                 "cited_by_count": m.get("cited_by_count", 0),
                 "type": "expansion",
                 "depth": depth,
+                "expand_owners": [r for r in active if aid in per_root[r]["cands"]],
             })
 
         # Every edge into a kept node, from any root (so bridges between roots show),

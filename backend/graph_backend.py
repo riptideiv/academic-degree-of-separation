@@ -34,6 +34,7 @@ class OpenAlexBackend(GraphBackend):
         client: OpenAlexClient,
         edge_types: set[str] | None = None,
         neighbor_cache: dict | None = None,
+        on_cache_updated: "callable | None" = None,
     ):
         self._client = client
         self._edge_types = edge_types if edge_types is not None else ALL_EDGE_TYPES
@@ -41,6 +42,8 @@ class OpenAlexBackend(GraphBackend):
         # Populated with ALL_EDGE_TYPES so each ring is fetched once and reused
         # across requests regardless of which edge types are currently active.
         self._cache: dict[str, list[Connection]] = neighbor_cache if neighbor_cache is not None else {}
+        # Called whenever new entries are written to the cache (e.g. to persist to disk).
+        self._on_cache_updated = on_cache_updated
 
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         tasks = []
@@ -122,6 +125,8 @@ class OpenAlexBackend(GraphBackend):
         if uncached:
             fresh = await self._fetch_neighbors_batch(uncached)
             self._cache.update(fresh)
+            if self._on_cache_updated:
+                self._on_cache_updated()
 
         return {
             aid: [c for c in self._cache.get(aid, []) if c.connection_type in self._edge_types]

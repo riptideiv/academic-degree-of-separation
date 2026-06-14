@@ -292,17 +292,57 @@
     if (state.origins.size) scheduleRebuild();
   });
 
-  // "Show all names" is a pure view toggle, so no refetch is needed.
+  // "Show all names" is a pure view toggle, so no refetch is needed — save immediately.
   document.getElementById('toggle-names')?.addEventListener('change', e => {
     state.showNames = e.target.checked;
     applyNameVisibility();
+    saveState();
   });
 
-  // Layout sliders just re-run the layout (no refetch). 'change' fires on release.
+  // Layout sliders just re-run the layout (no refetch). 'change' fires on release — save immediately.
   ['layout-spacing', 'layout-link'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => {
       if (cy.nodes().length) runLayout();
+      saveState();
     });
+  });
+
+  document.getElementById('restore-settings')?.addEventListener('click', () => {
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return; }
+    if (!saved.settings) return;
+    const prev = collectSettings();
+    applySettings(saved.settings);
+    applyNameVisibility();
+    applyEdgeFade();
+    // Rebuild if graph-affecting settings changed
+    const graphChanged = ['edgeCoauthor', 'edgeCitation', 'edgeInstitution', 'neighborhood']
+      .some(k => String(prev[k]) !== String(saved.settings[k]));
+    if (graphChanged && state.origins.size) scheduleRebuild();
+    else if (state.origins.size) runLayout();
+  });
+
+  document.getElementById('restore-default-layout')?.addEventListener('click', () => {
+    const el = id => document.getElementById(id);
+    if (el('layout-spacing')) el('layout-spacing').value = DEFAULT_SETTINGS.layoutSpacing;
+    if (el('layout-link'))    el('layout-link').value    = DEFAULT_SETTINGS.layoutLink;
+    if (state.origins.size) runLayout();
+  });
+
+  document.getElementById('clear-canvas')?.addEventListener('click', async () => {
+    if (state.isLoading) return;
+    // Wipe client state
+    cy.elements().remove();
+    state.origins.clear();
+    state.pathNodes.clear();
+    state.paths.clear();
+    state.authorCache.clear();
+    document.getElementById('origin-chips').innerHTML = '';
+    document.getElementById('node-detail').classList.add('hidden');
+    renderDegrees();
+    clearSavedState();
+    // Wipe server-side neighbor cache so the next search re-fetches from OpenAlex
+    try { await fetch(`${API_BASE}/api/cache`, { method: 'DELETE' }); } catch { /* ignore */ }
   });
 
   async function fetchAuthors(q) {
@@ -323,6 +363,101 @@
     }
   }
 
+  // ── Persistence (localStorage) ─────────────────────────────────────────────
+  const STORAGE_KEY = 'researcher_graph_v1';
+
+  const DEFAULT_SETTINGS = {
+    edgeCoauthor: true,
+    edgeCitation: true,
+    edgeInstitution: true,
+    neighborhood: '2,6',
+    showNames: false,
+    layoutSpacing: '5',
+    layoutLink: '100',
+  };
+
+  function collectSettings() {
+    return {
+      edgeCoauthor:    document.getElementById('edge-coauthor')?.checked    ?? DEFAULT_SETTINGS.edgeCoauthor,
+      edgeCitation:    document.getElementById('edge-citation')?.checked    ?? DEFAULT_SETTINGS.edgeCitation,
+      edgeInstitution: document.getElementById('edge-institution')?.checked ?? DEFAULT_SETTINGS.edgeInstitution,
+      neighborhood:    document.getElementById('neighborhood')?.value       ?? DEFAULT_SETTINGS.neighborhood,
+      showNames:       document.getElementById('toggle-names')?.checked     ?? DEFAULT_SETTINGS.showNames,
+      layoutSpacing:   document.getElementById('layout-spacing')?.value     ?? DEFAULT_SETTINGS.layoutSpacing,
+      layoutLink:      document.getElementById('layout-link')?.value        ?? DEFAULT_SETTINGS.layoutLink,
+    };
+  }
+
+  function applySettings(s) {
+    if (!s) return;
+    const el = id => document.getElementById(id);
+    if (el('edge-coauthor'))    el('edge-coauthor').checked    = s.edgeCoauthor    ?? DEFAULT_SETTINGS.edgeCoauthor;
+    if (el('edge-citation'))    el('edge-citation').checked    = s.edgeCitation    ?? DEFAULT_SETTINGS.edgeCitation;
+    if (el('edge-institution')) el('edge-institution').checked = s.edgeInstitution ?? DEFAULT_SETTINGS.edgeInstitution;
+    if (el('neighborhood'))     el('neighborhood').value       = s.neighborhood    ?? DEFAULT_SETTINGS.neighborhood;
+    if (el('toggle-names'))     el('toggle-names').checked     = s.showNames       ?? DEFAULT_SETTINGS.showNames;
+    if (el('layout-spacing'))   el('layout-spacing').value     = s.layoutSpacing   ?? DEFAULT_SETTINGS.layoutSpacing;
+    if (el('layout-link'))      el('layout-link').value        = s.layoutLink      ?? DEFAULT_SETTINGS.layoutLink;
+    state.showNames = s.showNames ?? DEFAULT_SETTINGS.showNames;
+  }
+
+  function saveState() {
+    const origins = [];
+    state.origins.forEach(id => {
+      const n = cy.getElementById(id);
+      if (n.length) origins.push({ id, display_name: n.data('name') });
+    });
+    const elements = cy.elements().jsons();
+    const paths = [...state.paths.entries()];
+    const settings = collectSettings();
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ origins, elements, paths, settings }));
+    } catch { /* quota exceeded — skip */ }
+  }
+
+  function clearSavedState() {
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
+  function loadSavedState() {
+    let saved;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      saved = JSON.parse(raw);
+    } catch { return; }
+
+    const { origins = [], elements = [], paths = [], settings } = saved;
+
+    // Always restore settings first (even if graph is empty)
+    if (settings) applySettings(settings);
+
+    if (!origins.length) return;
+
+    // Restore paths map
+    for (const [k, v] of paths) state.paths.set(k, v);
+
+    // Restore origin IDs + chips (no API call — elements carry the graph)
+    for (const author of origins) {
+      state.origins.add(author.id);
+      addChip(author);
+    }
+
+    // Restore full graph (nodes + edges) directly into Cytoscape
+    try { cy.add(elements); } catch { /* ignore stale element errors */ }
+
+    // Rebuild pathNodes set from restored graph
+    cy.nodes('[type="path"]').forEach(n => state.pathNodes.add(n.id()));
+
+    // Restore author cache from restored nodes
+    cy.nodes().forEach(n => state.authorCache.set(n.id(), n.data()));
+
+    applyNameVisibility();
+    applyEdgeFade();
+    renderDegrees();
+    runLayout();
+  }
+
   // ── Add researcher ─────────────────────────────────────────────────────────
   function addResearcher(author) {
     if (state.isLoading || state.origins.has(author.id)) return;
@@ -330,7 +465,7 @@
     searchDropdown.innerHTML = '';
     state.origins.add(author.id);
     addChip(author);
-    startExpansion(author.id);
+    startExpansion(author.id).then(saveState);
   }
 
   function addChip(author) {
@@ -348,6 +483,7 @@
     remove.type = 'button';
     remove.textContent = '×';
     remove.title = 'Remove researcher';
+    remove.disabled = state.isLoading;
     remove.addEventListener('click', () => removeResearcher(author.id));
 
     chip.append(name, remove);
@@ -357,51 +493,78 @@
   function removeResearcher(id) {
     if (state.isLoading) return;
     state.origins.delete(id);
+    document.querySelector(`.researcher-chip[data-id="${id}"]`)?.remove();
+    cy.getElementById(id).remove();  // Cytoscape auto-removes connected edges
 
-    const chip = document.querySelector(`.researcher-chip[data-id="${id}"]`);
-    if (chip) chip.remove();
-
-    // Remove the origin node (cytoscape removes its connected edges too).
-    cy.getElementById(id).remove();
-
-    // Drop any degree entries involving this researcher.
+    // Collect pair keys that are now broken (both endpoints no longer present)
+    const brokenPairs = new Set();
     for (const [key, d] of [...state.paths]) {
-      if (d.from_id === id || d.to_id === id) state.paths.delete(key);
+      if (d.from_id === id || d.to_id === id) {
+        brokenPairs.add(key);
+        state.paths.delete(key);
+      }
     }
     renderDegrees();
 
     if (state.origins.size === 0) {
       cy.elements().remove();
       state.pathNodes.clear();
+      clearSavedState();
       return;
     }
 
-    // Clean up expansion/path nodes that the removal left disconnected.
-    cy.nodes('[type="expansion"], [type="path"]').forEach(n => {
-      if (n.connectedEdges().length === 0) {
+    // Remove path nodes whose every recorded pair is now broken
+    cy.nodes('[type="path"]').forEach(n => {
+      const pairs = n.data('pathPairs') || [];
+      if (pairs.length === 0 || pairs.every(pk => brokenPairs.has(pk))) {
         state.pathNodes.delete(n.id());
         n.remove();
       }
     });
+
+    // Remove expansion nodes whose every generating origin is now gone
+    cy.nodes('[type="expansion"]').forEach(n => {
+      const owners = n.data('expandOwners') || [];
+      if (owners.length === 0 || owners.every(o => !state.origins.has(o))) {
+        n.remove();
+      }
+    });
+
+    saveState();
     runLayout();
   }
 
   // ── Graph helpers ──────────────────────────────────────────────────────────
   function addOrUpdateNode(nodeData) {
     if (nodeData.type === 'expansion') {
-      // Fade by distance from the researchers of interest so the dense outer
-      // ring recedes and the core connection stays prominent.
       const depth = nodeData.depth || 1;
       const op = depth <= 1 ? 1 : depth === 2 ? 0.65 : 0.4;
-      // Placeholder style; rescaleExpansionNodes() applies the relative scale on done.
-      nodeData = { ...nodeData, bgColor: '#d2d2d2', fontColor: '#d2d2d2', nodeSize: 6, fontSize: 8, zIdx: 1, op };
+      nodeData = {
+        ...nodeData,
+        expandOwners: nodeData.expand_owners || [],
+        bgColor: '#d2d2d2', fontColor: '#d2d2d2', nodeSize: 6, fontSize: 8, zIdx: 1, op,
+      };
     }
+    if (nodeData.type === 'path') {
+      nodeData = { ...nodeData, pathPairs: nodeData.path_pair ? [nodeData.path_pair] : [] };
+    }
+
     state.authorCache.set(nodeData.id, nodeData);
     const existing = cy.getElementById(nodeData.id);
     if (existing.length) {
       const priority = { origin: 3, path: 2, expansion: 1 };
       if ((priority[nodeData.type] || 0) > (priority[existing.data('type')] || 0)) {
-        existing.data(nodeData);
+        existing.data({
+          ...nodeData,
+          expandOwners: existing.data('expandOwners') || nodeData.expandOwners || [],
+          pathPairs: [...(existing.data('pathPairs') || []), ...(nodeData.pathPairs || [])],
+        });
+      } else if (nodeData.type === 'path' && nodeData.path_pair) {
+        // Same type: merge the new pair key in without duplicating
+        const pairs = existing.data('pathPairs') || [];
+        if (!pairs.includes(nodeData.path_pair)) {
+          existing.data('pathPairs', [...pairs, nodeData.path_pair]);
+        }
       }
       return;
     }
@@ -425,10 +588,28 @@
   // Resolves when the stream completes (or errors), so callers can replay it
   // sequentially. `existingOverride` lets rebuildGraph control exactly which
   // origins count as "already present" at each replay step.
+  // ── Loading state ──────────────────────────────────────────────────────────
+  // Disable all graph-affecting controls while a stream is in flight so the
+  // user can't trigger conflicting actions or cause the scheduleRebuild loop.
+  function setLoading(loading) {
+    state.isLoading = loading;
+    // Graph-affecting controls
+    ['edge-coauthor', 'edge-citation', 'edge-institution', 'neighborhood',
+     'restore-settings', 'restore-default-layout', 'clear-canvas'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = loading;
+    });
+    // Chip remove buttons (created dynamically, so query each time)
+    document.querySelectorAll('.chip-remove').forEach(btn => { btn.disabled = loading; });
+    // Dim the search input so it's clear adding is blocked
+    const si = document.getElementById('search-input');
+    if (si) si.disabled = loading;
+  }
+
   function startExpansion(newId, existingOverride) {
     return new Promise(resolve => {
       if (state.activeSource) { state.activeSource.close(); state.activeSource = null; }
-      state.isLoading = true;
+      setLoading(true);
       showProgress('Connecting…');
 
       cy.nodes('[type="expansion"]').remove();
@@ -452,7 +633,7 @@
 
       const finish = () => {
         if (state.activeSource === source) state.activeSource = null;
-        state.isLoading = false;
+        setLoading(false);
         resolve();
       };
 
@@ -524,6 +705,7 @@
     for (let i = 0; i < order.length; i++) {
       await startExpansion(order[i], order.slice(0, i));
     }
+    saveState();
   }
 
   // Read the Layout sliders into concrete force values (with sensible defaults).
@@ -688,4 +870,7 @@
     d.appendChild(document.createTextNode(str || ''));
     return d.innerHTML;
   }
+
+  // Restore any previously saved session on page load.
+  loadSavedState();
 })();

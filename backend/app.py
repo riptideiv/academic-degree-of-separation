@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.bfs import find_path
 from backend.graph_backend import ALL_EDGE_TYPES, OpenAlexBackend
-from backend.models import AuthorResult
+from backend.models import AuthorResult, Connection
 from backend.openalex_client import OpenAlexClient, _short_id
 
 log = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ app = FastAPI(title="Researcher Degree of Separation")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -31,9 +31,39 @@ _keys: dict = json.loads(_KEY_PATH.read_text()) if _KEY_PATH.exists() else {}
 _client = OpenAlexClient()
 _BACKEND = os.environ.get("BACKEND", "openalex")
 
-# Shared ring cache — persists for the lifetime of the server process.
+# ── Neighbor cache persistence ─────────────────────────────────────────────────
+# The cache maps author_id → list[Connection] and survives server restarts by
+# being serialised to a JSON file alongside the app.  Each Connection is stored
+# as its Pydantic dict so round-tripping is lossless.
+
+_CACHE_FILE = Path(__file__).parent.parent / "neighbor_cache.json"
+
+def _load_neighbor_cache() -> dict:
+    if not _CACHE_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(_CACHE_FILE.read_text())
+        return {
+            aid: [Connection(**c) for c in conns]
+            for aid, conns in raw.items()
+        }
+    except Exception as exc:
+        log.warning("Could not load neighbor cache from disk: %s", exc)
+        return {}
+
+def _save_neighbor_cache() -> None:
+    try:
+        serialisable = {
+            aid: [c.model_dump() for c in conns]
+            for aid, conns in _neighbor_cache.items()
+        }
+        _CACHE_FILE.write_text(json.dumps(serialisable))
+    except Exception as exc:
+        log.warning("Could not save neighbor cache to disk: %s", exc)
+
+# Shared ring cache — persists across server restarts via _CACHE_FILE.
 # Maps author_id → list[Connection] (all edge types stored, filtered on retrieval).
-_neighbor_cache: dict = {}
+_neighbor_cache: dict = _load_neighbor_cache()
 
 
 def _make_backend(edge_types: set[str]) -> OpenAlexBackend:
@@ -46,7 +76,12 @@ def _make_backend(edge_types: set[str]) -> OpenAlexBackend:
                 "or GOOGLE_CLOUD_PROJECT env var"
             )
         return BigQueryBackend(project, edge_types=edge_types)
-    return OpenAlexBackend(_client, edge_types=edge_types, neighbor_cache=_neighbor_cache)
+    return OpenAlexBackend(
+        _client,
+        edge_types=edge_types,
+        neighbor_cache=_neighbor_cache,
+        on_cache_updated=_save_neighbor_cache,
+    )
 
 
 def _get_inst(author: dict) -> str | None:
@@ -137,6 +172,15 @@ async def search_authors(q: str = Query(..., min_length=2)):
     return await _client.search_authors(q)
 
 
+@app.delete("/api/cache")
+async def clear_cache():
+    """Wipe the server-side neighbor cache (in-memory + on-disk)."""
+    _neighbor_cache.clear()
+    if _CACHE_FILE.exists():
+        _CACHE_FILE.unlink()
+    return {"cleared": True}
+
+
 @app.get("/api/path")
 async def get_path(
     from_id: str = Query(..., alias="from"),
@@ -221,8 +265,10 @@ async def graph_expand(
                 if isinstance(result, Exception):
                     log.warning("Path finding failed: %s", result)
                     continue
+                pair_key = "||".join(sorted([result["from_id"], result["to_id"]]))
                 for n in result["nodes"]:
                     if n["type"] == "path":
+                        n = {**n, "path_pair": pair_key}
                         new_path_node_ids.append(n["id"])
                     yield f"event: node\ndata: {json.dumps(n)}\n\n"
                 for e in result["edges"]:
