@@ -44,7 +44,7 @@
     const w = tooltip.offsetWidth, h = tooltip.offsetHeight;
     const vw = window.innerWidth, vh = window.innerHeight;
     tooltip.style.left = (mouseX + pad + w > vw ? mouseX - w - pad : mouseX + pad) + 'px';
-    tooltip.style.top  = (mouseY + pad + h > vh ? mouseY - h - pad : mouseY + pad) + 'px';
+    tooltip.style.top = (mouseY + pad + h > vh ? mouseY - h - pad : mouseY + pad) + 'px';
   }
 
   function showTooltip(html) {
@@ -302,13 +302,13 @@
     document.getElementById('detail-name').textContent = data.name;
     document.getElementById('detail-meta').innerHTML = data.type === 'work'
       ? [
-          data.publication_year ? `<div>${escHtml(String(data.publication_year))}</div>` : '',
-          `<div>${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
-        ].join('')
+        data.publication_year ? `<div>${escHtml(String(data.publication_year))}</div>` : '',
+        `<div>${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
+      ].join('')
       : [
-          data.institution ? `<div>${escHtml(data.institution)}</div>` : '',
-          `<div>${(data.works_count || 0).toLocaleString()} works · ${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
-        ].join('');
+        data.institution ? `<div>${escHtml(data.institution)}</div>` : '',
+        `<div>${(data.works_count || 0).toLocaleString()} works · ${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
+      ].join('');
     document.getElementById('detail-link').href = `https://openalex.org/${data.id}`;
     document.getElementById('node-detail').classList.remove('hidden');
   });
@@ -362,22 +362,10 @@
     loadPage(1);
   }
 
-  // Edge-type checkboxes re-run the search with the new set of connection types.
-  ['coauthor', 'citation', 'institution'].forEach(t => {
-    document.getElementById(`edge-${t}`)?.addEventListener('change', () => {
-      if (state.origins.size) scheduleRebuild();
-    });
-  });
-
-  // Work edge-type checkboxes (authors-of-work / cited-the-work) — same rebuild trigger.
-  ['authorship', 'citation'].forEach(t => {
-    document.getElementById(`work-edge-${t}`)?.addEventListener('change', () => {
-      if (state.origins.size) scheduleRebuild();
-    });
-  });
-
-  // Neighborhood size changes the search (depth / breadth), so re-run it.
-  document.getElementById('neighborhood')?.addEventListener('change', () => {
+  // Edge-type checkboxes, work edge-type checkboxes, and neighborhood size all
+  // affect the search, but are staged rather than applied immediately — the
+  // user commits them via the "Apply options" button below.
+  document.getElementById('apply-options')?.addEventListener('click', () => {
     if (state.origins.size) scheduleRebuild();
   });
 
@@ -416,7 +404,7 @@
   document.getElementById('restore-default-layout')?.addEventListener('click', () => {
     const el = id => document.getElementById(id);
     if (el('layout-spacing')) el('layout-spacing').value = DEFAULT_SETTINGS.layoutSpacing;
-    if (el('layout-link'))    el('layout-link').value    = DEFAULT_SETTINGS.layoutLink;
+    if (el('layout-link')) el('layout-link').value = DEFAULT_SETTINGS.layoutLink;
     if (state.origins.size) runLayout();
   });
 
@@ -480,14 +468,15 @@
       li.dataset.id = item.id;
       const infoHtml = isWork
         ? `<strong>${escHtml(item.title)}</strong><br>` +
-          `<small>${escHtml(item.author_names.join(', ') || 'Unknown authors')} · ` +
-          `${item.publication_year || '—'} · ${item.cited_by_count.toLocaleString()} citations</small>`
+        `<small>${escHtml(item.author_names.join(', ') || 'Unknown authors')} · ` +
+        `${item.publication_year || '—'} · ${item.cited_by_count.toLocaleString()} citations</small>`
         : `<strong>${escHtml(item.display_name)}</strong><br>` +
-          `<small>${escHtml(item.institution || 'Unknown institution')} · ` +
-          `${item.works_count.toLocaleString()} works · ${item.cited_by_count.toLocaleString()} citations</small>`;
+        `<small>${escHtml(item.institution || 'Unknown institution')} · ` +
+        `${item.works_count.toLocaleString()} works · ${item.cited_by_count.toLocaleString()} citations</small>`;
+      const arrowHtml = isWork ? '' : '<span class="result-arrow">&#9660;</span> ';
       li.innerHTML =
         `<div class="result-row-main">` +
-        `<div class="result-row-info">${infoHtml}</div>` +
+        `<div class="result-row-info">${arrowHtml}${infoHtml}</div>` +
         `<button type="button" class="add-btn-inline">Add</button>` +
         `</div>`;
       li.querySelector('.add-btn-inline').addEventListener('click', e => {
@@ -497,28 +486,54 @@
       // Works show everything (incl. authors) directly on the tile already, so
       // there's no expand-in-place panel for them — only authors get one (top papers).
       if (!isWork) {
-        li.querySelector('.result-row-info').addEventListener('click', () => toggleExpand(item, li));
+        li.querySelector('.result-row-info').addEventListener('click', () => toggleAuthorExpand(item, li));
       }
       list.appendChild(li);
     }
     renderPagination(data.page, data.total_pages);
   }
 
-  async function toggleExpand(author, li) {
+  async function toggleAuthorExpand(author, li) {
+    const arrow = li.querySelector('.result-arrow');
     const existingDetail = li.nextElementSibling;
     if (existingDetail && existingDetail.classList.contains('result-detail')) {
       existingDetail.remove();
+      arrow?.classList.remove('expanded');
       return;
     }
     document.querySelectorAll('#search-results-list .result-detail').forEach(d => d.remove());
+    document.querySelectorAll('#search-results-list .result-arrow.expanded').forEach(a => a.classList.remove('expanded'));
 
     const detail = document.createElement('li');
     detail.className = 'result-detail';
     detail.innerHTML = '<em>Loading top papers…</em>';
     li.after(detail);
+    arrow?.classList.add('expanded');
 
     const works = await loadTopWorks(author.id);
     detail.innerHTML = works.length ? renderWorksTable(works) : '<em>No works found.</em>';
+  }
+
+  // expandable degree panel cuz number of edges grows quickly
+  async function toggleDegreeExpand(degree, el) {
+    const arrow = el.querySelector('.degrees-arrow');
+    const existingDetail = el.nextElementSibling;
+    if (existingDetail && existingDetail.classList.contains('degrees-steps')) {
+      existingDetail.remove();
+      arrow?.classList.remove('expanded');
+      return;
+    }
+
+    const detail = document.createElement('ol');
+    detail.className = 'degrees-steps';
+    detail.innerHTML = '';
+    for (const s of degree.steps) {
+      detail.innerHTML +=
+        `<li><span class="step-people">${escHtml(s.from_name)} → ${escHtml(s.to_name)}</span>` +
+        `<span class="step-via">${escHtml(stepPhrase(s))}</span></li>`;
+    }
+    el.after(detail);
+    arrow?.classList.add('expanded');
   }
 
   // Renders the top-papers table: numbered + sorted by citation count (the
@@ -663,30 +678,30 @@
 
   function collectSettings() {
     return {
-      edgeCoauthor:       document.getElementById('edge-coauthor')?.checked         ?? DEFAULT_SETTINGS.edgeCoauthor,
-      edgeCitation:       document.getElementById('edge-citation')?.checked         ?? DEFAULT_SETTINGS.edgeCitation,
-      edgeInstitution:    document.getElementById('edge-institution')?.checked      ?? DEFAULT_SETTINGS.edgeInstitution,
-      workEdgeAuthorship: document.getElementById('work-edge-authorship')?.checked  ?? DEFAULT_SETTINGS.workEdgeAuthorship,
-      workEdgeCitation:   document.getElementById('work-edge-citation')?.checked    ?? DEFAULT_SETTINGS.workEdgeCitation,
-      neighborhood:       document.getElementById('neighborhood')?.value            ?? DEFAULT_SETTINGS.neighborhood,
-      showNames:          document.getElementById('toggle-names')?.checked          ?? DEFAULT_SETTINGS.showNames,
-      layoutSpacing:      document.getElementById('layout-spacing')?.value          ?? DEFAULT_SETTINGS.layoutSpacing,
-      layoutLink:         document.getElementById('layout-link')?.value             ?? DEFAULT_SETTINGS.layoutLink,
+      edgeCoauthor: document.getElementById('edge-coauthor')?.checked ?? DEFAULT_SETTINGS.edgeCoauthor,
+      edgeCitation: document.getElementById('edge-citation')?.checked ?? DEFAULT_SETTINGS.edgeCitation,
+      edgeInstitution: document.getElementById('edge-institution')?.checked ?? DEFAULT_SETTINGS.edgeInstitution,
+      workEdgeAuthorship: document.getElementById('work-edge-authorship')?.checked ?? DEFAULT_SETTINGS.workEdgeAuthorship,
+      workEdgeCitation: document.getElementById('work-edge-citation')?.checked ?? DEFAULT_SETTINGS.workEdgeCitation,
+      neighborhood: document.getElementById('neighborhood')?.value ?? DEFAULT_SETTINGS.neighborhood,
+      showNames: document.getElementById('toggle-names')?.checked ?? DEFAULT_SETTINGS.showNames,
+      layoutSpacing: document.getElementById('layout-spacing')?.value ?? DEFAULT_SETTINGS.layoutSpacing,
+      layoutLink: document.getElementById('layout-link')?.value ?? DEFAULT_SETTINGS.layoutLink,
     };
   }
 
   function applySettings(s) {
     if (!s) return;
     const el = id => document.getElementById(id);
-    if (el('edge-coauthor'))         el('edge-coauthor').checked         = s.edgeCoauthor       ?? DEFAULT_SETTINGS.edgeCoauthor;
-    if (el('edge-citation'))         el('edge-citation').checked         = s.edgeCitation       ?? DEFAULT_SETTINGS.edgeCitation;
-    if (el('edge-institution'))      el('edge-institution').checked      = s.edgeInstitution    ?? DEFAULT_SETTINGS.edgeInstitution;
-    if (el('work-edge-authorship'))  el('work-edge-authorship').checked  = s.workEdgeAuthorship ?? DEFAULT_SETTINGS.workEdgeAuthorship;
-    if (el('work-edge-citation'))    el('work-edge-citation').checked    = s.workEdgeCitation   ?? DEFAULT_SETTINGS.workEdgeCitation;
-    if (el('neighborhood'))          el('neighborhood').value            = s.neighborhood       ?? DEFAULT_SETTINGS.neighborhood;
-    if (el('toggle-names'))          el('toggle-names').checked          = s.showNames          ?? DEFAULT_SETTINGS.showNames;
-    if (el('layout-spacing'))        el('layout-spacing').value          = s.layoutSpacing      ?? DEFAULT_SETTINGS.layoutSpacing;
-    if (el('layout-link'))           el('layout-link').value             = s.layoutLink         ?? DEFAULT_SETTINGS.layoutLink;
+    if (el('edge-coauthor')) el('edge-coauthor').checked = s.edgeCoauthor ?? DEFAULT_SETTINGS.edgeCoauthor;
+    if (el('edge-citation')) el('edge-citation').checked = s.edgeCitation ?? DEFAULT_SETTINGS.edgeCitation;
+    if (el('edge-institution')) el('edge-institution').checked = s.edgeInstitution ?? DEFAULT_SETTINGS.edgeInstitution;
+    if (el('work-edge-authorship')) el('work-edge-authorship').checked = s.workEdgeAuthorship ?? DEFAULT_SETTINGS.workEdgeAuthorship;
+    if (el('work-edge-citation')) el('work-edge-citation').checked = s.workEdgeCitation ?? DEFAULT_SETTINGS.workEdgeCitation;
+    if (el('neighborhood')) el('neighborhood').value = s.neighborhood ?? DEFAULT_SETTINGS.neighborhood;
+    if (el('toggle-names')) el('toggle-names').checked = s.showNames ?? DEFAULT_SETTINGS.showNames;
+    if (el('layout-spacing')) el('layout-spacing').value = s.layoutSpacing ?? DEFAULT_SETTINGS.layoutSpacing;
+    if (el('layout-link')) el('layout-link').value = s.layoutLink ?? DEFAULT_SETTINGS.layoutLink;
     state.showNames = s.showNames ?? DEFAULT_SETTINGS.showNames;
   }
 
@@ -822,7 +837,7 @@
     // Remove expansion nodes whose every generating origin is now gone
     cy.nodes('[type="expansion"]').forEach(n => {
       const owners = n.data('expandOwners') || [];
-      if (owners.length === 0 || owners.every(o => !state.origins.has(o))) {
+      if (owners.length === 0 || owners.every(o => !state.origins.has(o) && !state.pathNodes.has(o))) {
         n.remove();
       }
     });
@@ -892,11 +907,11 @@
     state.isLoading = loading;
     // Graph-affecting controls
     ['edge-coauthor', 'edge-citation', 'edge-institution', 'work-edge-authorship',
-     'work-edge-citation', 'neighborhood',
-     'restore-settings', 'restore-default-layout', 'clear-canvas'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.disabled = loading;
-    });
+      'work-edge-citation', 'neighborhood', 'apply-options',
+      'restore-settings', 'restore-default-layout', 'clear-canvas'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = loading;
+      });
     // Chip remove buttons (created dynamically, so query each time)
     document.querySelectorAll('.chip-remove').forEach(btn => { btn.disabled = loading; });
     // Dim the search inputs/buttons so it's clear adding is blocked
@@ -1131,17 +1146,12 @@
       const li = document.createElement('li');
       let html =
         `<div class="degrees-pair">${escHtml(d.from_name)} ↔ ${escHtml(d.to_name)}</div>` +
-        `<div class="degrees-count">${escHtml(degreesLabel(d))}</div>`;
-      if (d.found && Array.isArray(d.steps) && d.steps.length) {
-        html += '<ol class="degrees-steps">';
-        for (const s of d.steps) {
-          html +=
-            `<li><span class="step-people">${escHtml(s.from_name)} → ${escHtml(s.to_name)}</span>` +
-            `<span class="step-via">${escHtml(stepPhrase(s))}</span></li>`;
-        }
-        html += '</ol>';
-      }
+        `<div><a class="degrees-count" style="cursor:pointer" href="#" onclick="return false;"><span class="degrees-arrow">&#9660;</span> <strong style="text-decoration:underline">${escHtml(degreesLabel(d))}</strong></a></div>`;
       li.innerHTML = html;
+
+      // detail is inserted after count div
+      li.querySelector('.degrees-count').addEventListener('click', () => toggleDegreeExpand(d, li.querySelector('.degrees-count')));
+
       list.appendChild(li);
     }
     panel.classList.toggle('hidden', state.paths.size === 0);
