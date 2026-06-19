@@ -18,7 +18,12 @@
   };
 
   // Base per-type edge opacity (multiplied by a distance factor in applyEdgeFade).
-  const EDGE_TYPE_OPACITY = { coauthor: 0.65, citation: 0.5, institution: 0.4 };
+  const EDGE_TYPE_OPACITY = { coauthor: 0.65, citation: 0.5, institution: 0.4, authorship: 0.6 };
+
+  // OpenAlex IDs are prefix-typed: works start with 'W', authors with 'A'.
+  function isWorkId(id) {
+    return id.startsWith('W');
+  }
 
   // ── Tooltip ────────────────────────────────────────────────────────────────
   const tooltip = document.createElement('div');
@@ -158,6 +163,20 @@
           'z-index': 100,
         },
       },
+      // Work: teal diamond, same prominence class as an origin
+      {
+        selector: 'node[type="work"]',
+        style: {
+          shape: 'diamond',
+          'background-color': '#2e86ab',
+          width: 32,
+          height: 32,
+          color: '#0d3a52',
+          'font-weight': '600',
+          'font-size': '11px',
+          'z-index': 200,
+        },
+      },
       // Expansion: size/shade driven by works/citations; whole-node opacity fades
       // with distance (data(op)) so the far periphery recedes. Labels are hidden
       // by default and revealed in bulk by the "Show all names" toggle (.shown).
@@ -205,9 +224,30 @@
         selector: 'edge[type="citation"]',
         style: { 'line-color': '#bbb', 'line-style': 'dashed' },
       },
+      // Arrowhead always points at whoever was cited; direction is computed
+      // backend-side (incoming/outgoing/mutual) so no merge logic is needed here.
+      {
+        selector: 'edge[type="citation"][direction="outgoing"]',
+        style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': '#bbb' },
+      },
+      {
+        selector: 'edge[type="citation"][direction="incoming"]',
+        style: { 'source-arrow-shape': 'triangle', 'source-arrow-color': '#bbb' },
+      },
+      {
+        selector: 'edge[type="citation"][direction="mutual"]',
+        style: {
+          'source-arrow-shape': 'triangle', 'source-arrow-color': '#bbb',
+          'target-arrow-shape': 'triangle', 'target-arrow-color': '#bbb',
+        },
+      },
       {
         selector: 'edge[type="institution"]',
         style: { 'line-color': '#ccc', 'line-style': 'dotted' },
+      },
+      {
+        selector: 'edge[type="authorship"]',
+        style: { 'line-color': '#7fae8e', width: 1.5 },
       },
     ],
     layout: { name: 'preset' },
@@ -220,8 +260,13 @@
     evt.target.addClass('hl');
     const d = evt.target.data();
     const lines = [`<strong>${escHtml(d.name)}</strong>`];
-    if (d.institution) lines.push(escHtml(d.institution));
-    lines.push(`${(d.works_count || 0).toLocaleString()} works · ${(d.cited_by_count || 0).toLocaleString()} citations`);
+    if (d.type === 'work') {
+      if (d.publication_year) lines.push(String(d.publication_year));
+      lines.push(`${(d.cited_by_count || 0).toLocaleString()} citations`);
+    } else {
+      if (d.institution) lines.push(escHtml(d.institution));
+      lines.push(`${(d.works_count || 0).toLocaleString()} works · ${(d.cited_by_count || 0).toLocaleString()} citations`);
+    }
     showTooltip(lines.join('<br>'));
   });
   cy.on('mouseout', 'node', function (evt) {
@@ -235,8 +280,16 @@
       coauthor: 'Co-authorship',
       citation: 'Citation',
       institution: 'Institution',
+      authorship: 'Author of work',
     }[d.type] || d.type;
     const lines = [`<em>${typeLabel}</em>`];
+    if (d.type === 'citation' && d.direction) {
+      const srcName = evt.target.source().data('name');
+      const tgtName = evt.target.target().data('name');
+      if (d.direction === 'mutual') lines.push(`${escHtml(srcName)} and ${escHtml(tgtName)} cited each other`);
+      else if (d.direction === 'outgoing') lines.push(`${escHtml(srcName)} cited ${escHtml(tgtName)}`);
+      else lines.push(`${escHtml(tgtName)} cited ${escHtml(srcName)}`);
+    }
     if (d.label) lines.push(`"${escHtml(d.label)}"`);
     showTooltip(lines.join('<br>'));
   });
@@ -247,10 +300,15 @@
     hideTooltip();
     const data = evt.target.data();
     document.getElementById('detail-name').textContent = data.name;
-    document.getElementById('detail-meta').innerHTML = [
-      data.institution ? `<div>${escHtml(data.institution)}</div>` : '',
-      `<div>${(data.works_count || 0).toLocaleString()} works · ${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
-    ].join('');
+    document.getElementById('detail-meta').innerHTML = data.type === 'work'
+      ? [
+          data.publication_year ? `<div>${escHtml(String(data.publication_year))}</div>` : '',
+          `<div>${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
+        ].join('')
+      : [
+          data.institution ? `<div>${escHtml(data.institution)}</div>` : '',
+          `<div>${(data.works_count || 0).toLocaleString()} works · ${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
+        ].join('');
     document.getElementById('detail-link').href = `https://openalex.org/${data.id}`;
     document.getElementById('node-detail').classList.remove('hidden');
   });
@@ -263,26 +321,57 @@
 
   // ── Search ─────────────────────────────────────────────────────────────────
   const searchInput = document.getElementById('search-input');
-  const searchDropdown = document.getElementById('search-dropdown');
-  let searchTimer;
+  const searchBtn = document.getElementById('search-btn');
+  const workSearchInput = document.getElementById('work-search-input');
+  const workSearchBtn = document.getElementById('work-search-btn');
 
-  searchInput.addEventListener('input', () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(async () => {
-      const q = searchInput.value.trim();
-      if (q.length < 2) { searchDropdown.innerHTML = ''; return; }
-      const authors = await fetchAuthors(q);
-      renderDropdown(authors);
-    }, 300);
+  // State for the currently open (or last opened) search modal session. Page and
+  // per-author-top-papers results are cached here so revisiting a page, or
+  // re-expanding an author, after closing/reopening the modal costs no extra
+  // network calls. The cache is cleared only when the user commits to an item
+  // via "Add" — see onAddFromModal — or when the query/entity type changes.
+  const searchSession = {
+    entityType: 'author',   // 'author' | 'work'
+    query: '',
+    pageCache: new Map(),    // page number -> PaginatedAuthors/PaginatedWorks response
+    topWorksCache: new Map(), // author id -> AuthorWork[] (author-only "top papers" panel)
+    currentPage: 1,
+  };
+
+  searchBtn.addEventListener('click', () => runSearch('author', searchInput));
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') runSearch('author', searchInput);
+  });
+  workSearchBtn.addEventListener('click', () => runSearch('work', workSearchInput));
+  workSearchInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') runSearch('work', workSearchInput);
   });
 
-  document.addEventListener('click', e => {
-    if (!e.target.closest('#search-wrapper')) searchDropdown.innerHTML = '';
-  });
+  function runSearch(entityType, inputEl) {
+    const q = inputEl.value.trim();
+    if (q.length < 2) return;
+    if (q !== searchSession.query || entityType !== searchSession.entityType) {
+      searchSession.pageCache.clear();
+      searchSession.topWorksCache.clear();
+      searchSession.query = q;
+      searchSession.entityType = entityType;
+    }
+    const title = document.getElementById('search-title');
+    if (title) title.textContent = entityType === 'work' ? 'Search results — works' : 'Search results — researchers';
+    openSearchModal();
+    loadPage(1);
+  }
 
   // Edge-type checkboxes re-run the search with the new set of connection types.
   ['coauthor', 'citation', 'institution'].forEach(t => {
     document.getElementById(`edge-${t}`)?.addEventListener('change', () => {
+      if (state.origins.size) scheduleRebuild();
+    });
+  });
+
+  // Work edge-type checkboxes (authors-of-work / cited-the-work) — same rebuild trigger.
+  ['authorship', 'citation'].forEach(t => {
+    document.getElementById(`work-edge-${t}`)?.addEventListener('change', () => {
       if (state.origins.size) scheduleRebuild();
     });
   });
@@ -316,8 +405,10 @@
     applyNameVisibility();
     applyEdgeFade();
     // Rebuild if graph-affecting settings changed
-    const graphChanged = ['edgeCoauthor', 'edgeCitation', 'edgeInstitution', 'neighborhood']
-      .some(k => String(prev[k]) !== String(saved.settings[k]));
+    const graphChanged = [
+      'edgeCoauthor', 'edgeCitation', 'edgeInstitution',
+      'workEdgeAuthorship', 'workEdgeCitation', 'neighborhood',
+    ].some(k => String(prev[k]) !== String(saved.settings[k]));
     if (graphChanged && state.origins.size) scheduleRebuild();
     else if (state.origins.size) runLayout();
   });
@@ -345,22 +436,214 @@
     try { await fetch(`${API_BASE}/api/cache`, { method: 'DELETE' }); } catch { /* ignore */ }
   });
 
-  async function fetchAuthors(q) {
+  // ── Search modal (shared by both author and work search) ──────────────────
+  async function fetchResultsPage(q, page) {
+    const endpoint = searchSession.entityType === 'work' ? 'works' : 'authors';
+    const r = await fetch(`${API_BASE}/api/${endpoint}?q=${encodeURIComponent(q)}&page=${page}&per_page=20`);
+    if (!r.ok) throw new Error('search failed');
+    return r.json();
+  }
+
+  async function loadPage(page) {
+    searchSession.currentPage = page;
+    if (searchSession.pageCache.has(page)) {
+      renderResultsList(searchSession.pageCache.get(page));
+      return;
+    }
+    renderSearchListMessage('Searching…');
     try {
-      const r = await fetch(`${API_BASE}/api/authors?q=${encodeURIComponent(q)}`);
-      return r.ok ? r.json() : [];
+      const data = await fetchResultsPage(searchSession.query, page);
+      searchSession.pageCache.set(page, data);
+      renderResultsList(data);
+    } catch {
+      renderSearchListMessage('Search failed. Please try again.');
+    }
+  }
+
+  function renderSearchListMessage(msg) {
+    const list = document.getElementById('search-results-list');
+    list.innerHTML = `<li class="empty-state">${escHtml(msg)}</li>`;
+    document.getElementById('search-pagination').innerHTML = '';
+  }
+
+  function renderResultsList(data) {
+    const list = document.getElementById('search-results-list');
+    list.innerHTML = '';
+    const candidates = data.results.filter(item => !state.origins.has(item.id));
+    if (!candidates.length) {
+      list.innerHTML = '<li class="empty-state">No results.</li>';
+    }
+    const isWork = searchSession.entityType === 'work';
+    for (const item of candidates) {
+      const li = document.createElement('li');
+      li.className = 'result-row';
+      li.dataset.id = item.id;
+      const infoHtml = isWork
+        ? `<strong>${escHtml(item.title)}</strong><br>` +
+          `<small>${escHtml(item.author_names.join(', ') || 'Unknown authors')} · ` +
+          `${item.publication_year || '—'} · ${item.cited_by_count.toLocaleString()} citations</small>`
+        : `<strong>${escHtml(item.display_name)}</strong><br>` +
+          `<small>${escHtml(item.institution || 'Unknown institution')} · ` +
+          `${item.works_count.toLocaleString()} works · ${item.cited_by_count.toLocaleString()} citations</small>`;
+      li.innerHTML =
+        `<div class="result-row-main">` +
+        `<div class="result-row-info">${infoHtml}</div>` +
+        `<button type="button" class="add-btn-inline">Add</button>` +
+        `</div>`;
+      li.querySelector('.add-btn-inline').addEventListener('click', e => {
+        e.stopPropagation();
+        onAddFromModal(item);
+      });
+      // Works show everything (incl. authors) directly on the tile already, so
+      // there's no expand-in-place panel for them — only authors get one (top papers).
+      if (!isWork) {
+        li.querySelector('.result-row-info').addEventListener('click', () => toggleExpand(item, li));
+      }
+      list.appendChild(li);
+    }
+    renderPagination(data.page, data.total_pages);
+  }
+
+  async function toggleExpand(author, li) {
+    const existingDetail = li.nextElementSibling;
+    if (existingDetail && existingDetail.classList.contains('result-detail')) {
+      existingDetail.remove();
+      return;
+    }
+    document.querySelectorAll('#search-results-list .result-detail').forEach(d => d.remove());
+
+    const detail = document.createElement('li');
+    detail.className = 'result-detail';
+    detail.innerHTML = '<em>Loading top papers…</em>';
+    li.after(detail);
+
+    const works = await loadTopWorks(author.id);
+    detail.innerHTML = works.length ? renderWorksTable(works) : '<em>No works found.</em>';
+  }
+
+  // Renders the top-papers table: numbered + sorted by citation count (the
+  // backend already sorts this way; re-sorting here is a cheap safety net),
+  // each title linked to its DOI when the API provided one.
+  function renderWorksTable(works) {
+    const sorted = [...works].sort((a, b) => b.cited_by_count - a.cited_by_count);
+    const rows = sorted.map((w, i) => {
+      const titleHtml = w.doi
+        ? `<a href="${escAttr(w.doi)}" target="_blank" rel="noopener">${escHtml(w.title)}</a>`
+        : escHtml(w.title);
+      return `<tr><td class="rank">${i + 1}</td><td class="title">${titleHtml}</td>` +
+        `<td class="citations">${w.cited_by_count.toLocaleString()}</td></tr>`;
+    }).join('');
+    return `<table class="works-table"><tbody>${rows}</tbody></table>`;
+  }
+
+  async function loadTopWorks(authorId) {
+    if (searchSession.topWorksCache.has(authorId)) return searchSession.topWorksCache.get(authorId);
+    try {
+      const r = await fetch(`${API_BASE}/api/authors/${authorId}/works?limit=10`);
+      const works = r.ok ? await r.json() : [];
+      searchSession.topWorksCache.set(authorId, works);
+      return works;
     } catch { return []; }
   }
 
-  function renderDropdown(authors) {
-    searchDropdown.innerHTML = '';
-    for (const a of authors) {
-      if (state.origins.has(a.id)) continue;
-      const li = document.createElement('li');
-      li.innerHTML = `<strong>${escHtml(a.display_name)}</strong><br><small>${escHtml(a.institution || 'Unknown institution')} · ${a.works_count} works</small>`;
-      li.addEventListener('mousedown', e => { e.preventDefault(); addResearcher(a); });
-      searchDropdown.appendChild(li);
+  function onAddFromModal(item) {
+    if (searchSession.entityType === 'work') addWork(item);
+    else addResearcher(item);
+    searchSession.pageCache.clear();
+    searchSession.topWorksCache.clear();
+    closeSearchModal();
+  }
+
+  // Windowed pagination: first, last, current, and current ± 2 neighbors, with a
+  // single '…' standing in for any gap of 2 or more skipped pages.
+  function paginationWindow(current, total) {
+    const pages = new Set([1, total, current]);
+    for (let d = 1; d <= 2; d++) {
+      if (current - d >= 1) pages.add(current - d);
+      if (current + d <= total) pages.add(current + d);
     }
+    const sorted = [...pages].filter(p => p >= 1 && p <= total).sort((a, b) => a - b);
+    const out = [];
+    for (let i = 0; i < sorted.length; i++) {
+      if (i > 0 && sorted[i] - sorted[i - 1] > 1) out.push('…');
+      out.push(sorted[i]);
+    }
+    return out;
+  }
+
+  function renderPagination(current, total) {
+    const bar = document.getElementById('search-pagination');
+    bar.innerHTML = '';
+    const mkBtn = (label, page, opts = {}) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.disabled = !!opts.disabled;
+      if (opts.current) b.classList.add('current');
+      if (!opts.disabled && !opts.current) b.addEventListener('click', () => loadPage(page));
+      return b;
+    };
+    bar.appendChild(mkBtn('<', current - 1, { disabled: current <= 1 }));
+    const items = paginationWindow(current, total);
+    const lastEllipsisIdx = items.lastIndexOf('…');
+    items.forEach((item, i) => {
+      if (item === '…') {
+        if (i === lastEllipsisIdx) {
+          bar.appendChild(buildPageJumpWidget(total));
+        } else {
+          const span = document.createElement('span');
+          span.className = 'ellipsis';
+          span.textContent = '…';
+          bar.appendChild(span);
+        }
+      } else {
+        bar.appendChild(mkBtn(String(item), item, { current: item === current }));
+      }
+    });
+    bar.appendChild(mkBtn('>', current + 1, { disabled: current >= total }));
+  }
+
+  // A "…" gap replaced by a page-number input. The Go button only appears
+  // while the input is focused, and is the only thing that triggers a jump —
+  // no Enter-to-submit, no jump-on-blur.
+  function buildPageJumpWidget(total) {
+    const wrap = document.createElement('span');
+    wrap.className = 'page-jump';
+
+    const goBtn = document.createElement('button');
+    goBtn.type = 'button';
+    goBtn.className = 'page-jump-go hidden';
+    goBtn.textContent = 'Go';
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'page-jump-input';
+    input.min = '1';
+    input.max = String(total);
+    input.placeholder = '…';
+
+    input.addEventListener('focus', () => goBtn.classList.remove('hidden'));
+    wrap.addEventListener('focusout', e => {
+      if (!wrap.contains(e.relatedTarget)) goBtn.classList.add('hidden');
+    });
+    goBtn.addEventListener('click', () => {
+      const n = parseInt(input.value, 10);
+      if (Number.isInteger(n) && n >= 1 && n <= total) loadPage(n);
+    });
+
+    wrap.append(goBtn, input);
+    return wrap;
+  }
+
+  function openSearchModal() {
+    const modal = document.getElementById('search-modal');
+    modal.classList.remove('hidden');
+    document.getElementById('search-backdrop').onclick = closeSearchModal;
+    document.getElementById('search-close').onclick = closeSearchModal;
+  }
+
+  function closeSearchModal() {
+    document.getElementById('search-modal').classList.add('hidden');
   }
 
   // ── Persistence (localStorage) ─────────────────────────────────────────────
@@ -370,6 +653,8 @@
     edgeCoauthor: true,
     edgeCitation: true,
     edgeInstitution: true,
+    workEdgeAuthorship: true,
+    workEdgeCitation: true,
     neighborhood: '2,6',
     showNames: false,
     layoutSpacing: '5',
@@ -378,26 +663,30 @@
 
   function collectSettings() {
     return {
-      edgeCoauthor:    document.getElementById('edge-coauthor')?.checked    ?? DEFAULT_SETTINGS.edgeCoauthor,
-      edgeCitation:    document.getElementById('edge-citation')?.checked    ?? DEFAULT_SETTINGS.edgeCitation,
-      edgeInstitution: document.getElementById('edge-institution')?.checked ?? DEFAULT_SETTINGS.edgeInstitution,
-      neighborhood:    document.getElementById('neighborhood')?.value       ?? DEFAULT_SETTINGS.neighborhood,
-      showNames:       document.getElementById('toggle-names')?.checked     ?? DEFAULT_SETTINGS.showNames,
-      layoutSpacing:   document.getElementById('layout-spacing')?.value     ?? DEFAULT_SETTINGS.layoutSpacing,
-      layoutLink:      document.getElementById('layout-link')?.value        ?? DEFAULT_SETTINGS.layoutLink,
+      edgeCoauthor:       document.getElementById('edge-coauthor')?.checked         ?? DEFAULT_SETTINGS.edgeCoauthor,
+      edgeCitation:       document.getElementById('edge-citation')?.checked         ?? DEFAULT_SETTINGS.edgeCitation,
+      edgeInstitution:    document.getElementById('edge-institution')?.checked      ?? DEFAULT_SETTINGS.edgeInstitution,
+      workEdgeAuthorship: document.getElementById('work-edge-authorship')?.checked  ?? DEFAULT_SETTINGS.workEdgeAuthorship,
+      workEdgeCitation:   document.getElementById('work-edge-citation')?.checked    ?? DEFAULT_SETTINGS.workEdgeCitation,
+      neighborhood:       document.getElementById('neighborhood')?.value            ?? DEFAULT_SETTINGS.neighborhood,
+      showNames:          document.getElementById('toggle-names')?.checked          ?? DEFAULT_SETTINGS.showNames,
+      layoutSpacing:      document.getElementById('layout-spacing')?.value          ?? DEFAULT_SETTINGS.layoutSpacing,
+      layoutLink:         document.getElementById('layout-link')?.value             ?? DEFAULT_SETTINGS.layoutLink,
     };
   }
 
   function applySettings(s) {
     if (!s) return;
     const el = id => document.getElementById(id);
-    if (el('edge-coauthor'))    el('edge-coauthor').checked    = s.edgeCoauthor    ?? DEFAULT_SETTINGS.edgeCoauthor;
-    if (el('edge-citation'))    el('edge-citation').checked    = s.edgeCitation    ?? DEFAULT_SETTINGS.edgeCitation;
-    if (el('edge-institution')) el('edge-institution').checked = s.edgeInstitution ?? DEFAULT_SETTINGS.edgeInstitution;
-    if (el('neighborhood'))     el('neighborhood').value       = s.neighborhood    ?? DEFAULT_SETTINGS.neighborhood;
-    if (el('toggle-names'))     el('toggle-names').checked     = s.showNames       ?? DEFAULT_SETTINGS.showNames;
-    if (el('layout-spacing'))   el('layout-spacing').value     = s.layoutSpacing   ?? DEFAULT_SETTINGS.layoutSpacing;
-    if (el('layout-link'))      el('layout-link').value        = s.layoutLink      ?? DEFAULT_SETTINGS.layoutLink;
+    if (el('edge-coauthor'))         el('edge-coauthor').checked         = s.edgeCoauthor       ?? DEFAULT_SETTINGS.edgeCoauthor;
+    if (el('edge-citation'))         el('edge-citation').checked         = s.edgeCitation       ?? DEFAULT_SETTINGS.edgeCitation;
+    if (el('edge-institution'))      el('edge-institution').checked      = s.edgeInstitution    ?? DEFAULT_SETTINGS.edgeInstitution;
+    if (el('work-edge-authorship'))  el('work-edge-authorship').checked  = s.workEdgeAuthorship ?? DEFAULT_SETTINGS.workEdgeAuthorship;
+    if (el('work-edge-citation'))    el('work-edge-citation').checked    = s.workEdgeCitation   ?? DEFAULT_SETTINGS.workEdgeCitation;
+    if (el('neighborhood'))          el('neighborhood').value            = s.neighborhood       ?? DEFAULT_SETTINGS.neighborhood;
+    if (el('toggle-names'))          el('toggle-names').checked          = s.showNames          ?? DEFAULT_SETTINGS.showNames;
+    if (el('layout-spacing'))        el('layout-spacing').value          = s.layoutSpacing      ?? DEFAULT_SETTINGS.layoutSpacing;
+    if (el('layout-link'))           el('layout-link').value             = s.layoutLink         ?? DEFAULT_SETTINGS.layoutLink;
     state.showNames = s.showNames ?? DEFAULT_SETTINGS.showNames;
   }
 
@@ -440,7 +729,7 @@
     // Restore origin IDs + chips (no API call — elements carry the graph)
     for (const author of origins) {
       state.origins.add(author.id);
-      addChip(author);
+      addChip(author.id, author.display_name);
     }
 
     // Restore full graph (nodes + edges) directly into Cytoscape
@@ -462,29 +751,37 @@
   function addResearcher(author) {
     if (state.isLoading || state.origins.has(author.id)) return;
     searchInput.value = '';
-    searchDropdown.innerHTML = '';
     state.origins.add(author.id);
-    addChip(author);
+    addChip(author.id, author.display_name);
     startExpansion(author.id).then(saveState);
   }
 
-  function addChip(author) {
+  function addWork(work) {
+    if (state.isLoading || state.origins.has(work.id)) return;
+    workSearchInput.value = '';
+    state.origins.add(work.id);
+    addChip(work.id, work.title);
+    startExpansion(work.id).then(saveState);
+  }
+
+  function addChip(id, label) {
+    const work = isWorkId(id);
     const chip = document.createElement('div');
     chip.className = 'researcher-chip';
-    chip.dataset.id = author.id;
-    chip.title = author.display_name;
+    chip.dataset.id = id;
+    chip.title = label;
 
     const name = document.createElement('span');
     name.className = 'chip-name';
-    name.textContent = author.display_name;
+    name.textContent = work ? `📄 ${label}` : label;
 
     const remove = document.createElement('button');
     remove.className = 'chip-remove';
     remove.type = 'button';
     remove.textContent = '×';
-    remove.title = 'Remove researcher';
+    remove.title = work ? 'Remove work' : 'Remove researcher';
     remove.disabled = state.isLoading;
-    remove.addEventListener('click', () => removeResearcher(author.id));
+    remove.addEventListener('click', () => removeResearcher(id));
 
     chip.append(name, remove);
     document.getElementById('origin-chips').appendChild(chip);
@@ -552,7 +849,7 @@
     state.authorCache.set(nodeData.id, nodeData);
     const existing = cy.getElementById(nodeData.id);
     if (existing.length) {
-      const priority = { origin: 3, path: 2, expansion: 1 };
+      const priority = { origin: 3, work: 3, path: 2, expansion: 1 };
       if ((priority[nodeData.type] || 0) > (priority[existing.data('type')] || 0)) {
         existing.data({
           ...nodeData,
@@ -594,16 +891,19 @@
   function setLoading(loading) {
     state.isLoading = loading;
     // Graph-affecting controls
-    ['edge-coauthor', 'edge-citation', 'edge-institution', 'neighborhood',
+    ['edge-coauthor', 'edge-citation', 'edge-institution', 'work-edge-authorship',
+     'work-edge-citation', 'neighborhood',
      'restore-settings', 'restore-default-layout', 'clear-canvas'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = loading;
     });
     // Chip remove buttons (created dynamically, so query each time)
     document.querySelectorAll('.chip-remove').forEach(btn => { btn.disabled = loading; });
-    // Dim the search input so it's clear adding is blocked
-    const si = document.getElementById('search-input');
-    if (si) si.disabled = loading;
+    // Dim the search inputs/buttons so it's clear adding is blocked
+    ['search-input', 'search-btn', 'work-search-input', 'work-search-btn'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = loading;
+    });
   }
 
   function startExpansion(newId, existingOverride) {
@@ -624,6 +924,7 @@
       if (existingOrigins.length) params.set('origin_ids', existingOrigins.join(','));
       if (existingPathIds.length) params.set('path_ids', existingPathIds.join(','));
       getEnabledEdges().forEach(e => params.append('edges', e));
+      getEnabledWorkEdges().forEach(e => params.append('work_edges', e));
       const nb = getNeighborhood();
       params.set('depth', nb.depth);
       params.set('top_k', nb.topK);
@@ -852,6 +1153,11 @@
       .filter(e => document.getElementById(`edge-${e}`)?.checked);
   }
 
+  function getEnabledWorkEdges() {
+    return ['authorship', 'citation']
+      .filter(e => document.getElementById(`work-edge-${e}`)?.checked);
+  }
+
   function showProgress(msg, isError = false) {
     const overlay = document.getElementById('progress-overlay');
     const text = document.getElementById('progress-text');
@@ -869,6 +1175,10 @@
     const d = document.createElement('div');
     d.appendChild(document.createTextNode(str || ''));
     return d.innerHTML;
+  }
+
+  function escAttr(str) {
+    return escHtml(str).replace(/"/g, '&quot;');
   }
 
   // Restore any previously saved session on page load.

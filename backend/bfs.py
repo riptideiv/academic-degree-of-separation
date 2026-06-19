@@ -17,7 +17,7 @@ async def find_path(
             "type": "result",
             "found": True,
             "path": [{"author_id": source_id, "author_name": source_name,
-                      "connection_to_next": None, "label": None}],
+                      "connection_to_next": None, "label": None, "direction": None}],
             "hops": 0,
         }
         return
@@ -144,23 +144,25 @@ def _reconstruct_path(
 
     if not all_steps:
         return [{"author_id": meeting_id, "author_name": names.get(meeting_id, meeting_id),
-                 "connection_to_next": None, "label": None}]
+                 "connection_to_next": None, "label": None, "direction": None}]
 
     first_id = all_steps[0][0]
     path: list[dict] = [
         {"author_id": first_id, "author_name": names.get(first_id, first_id),
-         "connection_to_next": None, "label": None}
+         "connection_to_next": None, "label": None, "direction": None}
     ]
 
     for from_id, conn, to_id in all_steps:
         if path[-1]["author_id"] == from_id:
             path[-1]["connection_to_next"] = conn.connection_type
             path[-1]["label"] = conn.label
+            path[-1]["direction"] = conn.direction
         path.append({
             "author_id": to_id,
             "author_name": names.get(to_id, to_id),
             "connection_to_next": None,
             "label": None,
+            "direction": None,
         })
 
     return path

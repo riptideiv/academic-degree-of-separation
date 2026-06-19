@@ -12,12 +12,13 @@ class MockBackend(GraphBackend):
         return self._graph.get(author_id, [])
 
 
-def edge(to_id, to_name, conn_type="coauthor", label="Test Paper"):
+def edge(to_id, to_name, conn_type="coauthor", label="Test Paper", direction=None):
     return Connection(
         target_author_id=to_id,
         target_name=to_name,
         connection_type=conn_type,
         label=label,
+        direction=direction,
     )
 
 
@@ -106,6 +107,21 @@ async def test_path_has_connection_labels():
     first_step = result["path"][0]
     assert first_step["connection_to_next"] == "coauthor"
     assert first_step["label"] == "Famous Paper"
+    assert first_step["direction"] is None
+
+
+async def test_path_propagates_citation_direction():
+    graph = {
+        "A1": [edge("A2", "Bob", conn_type="citation", direction="outgoing")],
+        "A2": [edge("A1", "Alice", conn_type="citation", direction="incoming")],
+    }
+    backend = MockBackend(graph)
+    events = await collect(find_path(backend, "A1", "Alice", "A2", "Bob"))
+    result = events[-1]
+    assert result["found"] is True
+    first_step = result["path"][0]
+    assert first_step["connection_to_next"] == "citation"
+    assert first_step["direction"] == "outgoing"
 
 
 async def test_interior_meeting_point():

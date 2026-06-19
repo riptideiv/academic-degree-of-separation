@@ -89,6 +89,7 @@ async def expand_graph(
                         "target": tgt,
                         "type": conn.connection_type,
                         "label": conn.label,
+                        "direction": conn.direction,
                     })
             per_root[r] = {"cands": cands, "freq": freq, "edges": edges}
 
@@ -178,6 +179,7 @@ async def expand_graph(
                     "target": tgt,
                     "type": conn.connection_type,
                     "label": conn.label,
+                    "direction": conn.direction,
                 })
         if stitch:
             yield {"type": "expansion", "depth": max_depth, "nodes": [], "edges": stitch}

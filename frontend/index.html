@@ -18,7 +18,12 @@
 
     <div id="search-wrapper">
       <input type="text" id="search-input" placeholder="Add a researcher…" autocomplete="off">
-      <ul id="search-dropdown" class="dropdown"></ul>
+      <button id="search-btn" type="button">Search</button>
+    </div>
+
+    <div id="work-search-wrapper">
+      <input type="text" id="work-search-input" placeholder="Add a work…" autocomplete="off">
+      <button id="work-search-btn" type="button">Search</button>
     </div>
 
     <div id="origin-chips"></div>
@@ -33,6 +38,12 @@
       <label><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>
       <label><input type="checkbox" id="edge-citation" checked> Citations</label>
       <label><input type="checkbox" id="edge-institution" checked> Institution</label>
+    </div>
+
+    <div class="section-label">Work edge types</div>
+    <div id="work-edge-toggles">
+      <label><input type="checkbox" id="work-edge-authorship" checked> Authors of work</label>
+      <label><input type="checkbox" id="work-edge-citation" checked> Cited the work</label>
     </div>
 
     <div class="section-label">Neighborhood</div>
@@ -76,6 +87,18 @@
       <span id="progress-text">Loading…</span>
     </div>
     <div id="cy"></div>
+  </div>
+
+  <div id="search-modal" class="hidden">
+    <div id="search-backdrop"></div>
+    <div id="search-dialog">
+      <div id="search-header">
+        <span id="search-title">Search results</span>
+        <button id="search-close" type="button" aria-label="Close">×</button>
+      </div>
+      <ul id="search-results-list"></ul>
+      <div id="search-pagination"></div>
+    </div>
   </div>
 
   <script src="app.js"></script>

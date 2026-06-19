@@ -33,12 +33,13 @@ async def test_search_authors(api_key_file):
         })
     )
     client = OpenAlexClient(api_key_path=api_key_file)
-    results = await client.search_authors("Alice")
+    results, total = await client.search_authors("Alice")
     assert len(results) == 1
     assert results[0].id == "A123"
     assert results[0].display_name == "Alice Smith"
     assert results[0].institution == "MIT"
     assert results[0].works_count == 42
+    assert total == 1
 
 
 @respx.mock
@@ -56,8 +57,21 @@ async def test_search_authors_no_institution(api_key_file):
         })
     )
     client = OpenAlexClient(api_key_path=api_key_file)
-    results = await client.search_authors("Bob")
+    results, _total = await client.search_authors("Bob")
     assert results[0].institution is None
+
+
+@respx.mock
+async def test_search_authors_pagination_params(api_key_file):
+    route = respx.get("https://api.openalex.org/authors").mock(
+        return_value=httpx.Response(200, json={"results": [], "meta": {"count": 0}})
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+    await client.search_authors("Alice", page=3, per_page=20)
+    request = route.calls.last.request
+    params = dict(httpx.QueryParams(request.url.query))
+    assert params["page"] == "3"
+    assert params["per_page"] == "20"
 
 
 @respx.mock
@@ -111,9 +125,10 @@ async def test_retry_on_429(api_key_file):
     client = OpenAlexClient(api_key_path=api_key_file)
     import unittest.mock as mock
     with mock.patch("asyncio.sleep"):
-        results = await client.search_authors("test")
+        results, total = await client.search_authors("test")
     assert call_count == 2
     assert results == []
+    assert total == 0
 
 
 @respx.mock
@@ -188,6 +203,98 @@ async def test_get_works_by_authors_chunks_large_list(api_key_file):
     works = await client.get_works_by_authors(author_ids)
     assert call_count == 2  # two chunks: FILTER_CHUNK + 1 remaining
     assert len(works) == 2  # one result per chunk merged
+
+
+@respx.mock
+async def test_get_works_batch(api_key_file):
+    respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json={
+            "results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "title": "Paper One",
+                    "authorships": [
+                        {"author": {"id": "https://openalex.org/A1", "display_name": "Alice"}}
+                    ],
+                }
+            ]
+        })
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+    works = await client.get_works_batch(["W1"])
+    assert len(works) == 1
+    assert works[0]["title"] == "Paper One"
+
+
+@respx.mock
+async def test_get_work(api_key_file):
+    respx.get("https://api.openalex.org/works/W1").mock(
+        return_value=httpx.Response(200, json={
+            "id": "https://openalex.org/W1",
+            "title": "Paper One",
+            "cited_by_count": 10,
+        })
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+    data = await client.get_work("W1")
+    assert data["title"] == "Paper One"
+
+
+@respx.mock
+async def test_search_works(api_key_file):
+    respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json={
+            "results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "title": "Paper One",
+                    "publication_year": 2020,
+                    "cited_by_count": 50,
+                    "doi": "https://doi.org/10.1/abc",
+                    "authorships": [
+                        {"author": {"id": "https://openalex.org/A1", "display_name": "Alice"}},
+                        {"author": {"id": "https://openalex.org/A2", "display_name": "Bob"}},
+                    ],
+                }
+            ],
+            "meta": {"count": 1},
+        })
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+    results, total = await client.search_works("test")
+    assert total == 1
+    assert len(results) == 1
+    r = results[0]
+    assert r.id == "W1"
+    assert r.title == "Paper One"
+    assert r.publication_year == 2020
+    assert r.cited_by_count == 50
+    assert r.doi == "https://doi.org/10.1/abc"
+    assert r.author_names == ["Alice", "Bob"]
+
+
+@respx.mock
+async def test_get_author_works_includes_referenced_works(api_key_file):
+    route = respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+    await client.get_author_works("A1")
+    request = route.calls.last.request
+    params = dict(httpx.QueryParams(request.url.query))
+    assert "referenced_works" in params["select"]
+
+
+@respx.mock
+async def test_get_works_by_authors_includes_referenced_works(api_key_file):
+    route = respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+    await client.get_works_by_authors(["A1"])
+    request = route.calls.last.request
+    params = dict(httpx.QueryParams(request.url.query))
+    assert "referenced_works" in params["select"]
 
 
 @respx.mock

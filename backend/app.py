@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -10,8 +11,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.bfs import find_path
-from backend.graph_backend import ALL_EDGE_TYPES, OpenAlexBackend
-from backend.models import AuthorResult, Connection
+from backend.graph_backend import ALL_EDGE_TYPES, ALL_WORK_EDGE_TYPES, OpenAlexBackend, _is_work_id
+from backend.models import AuthorResult, AuthorWork, Connection, PaginatedAuthors, PaginatedWorks
 from backend.openalex_client import OpenAlexClient, _short_id
 
 log = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ def _save_neighbor_cache() -> None:
 _neighbor_cache: dict = _load_neighbor_cache()
 
 
-def _make_backend(edge_types: set[str]) -> OpenAlexBackend:
+def _make_backend(edge_types: set[str], work_edge_types: set[str] | None = None) -> OpenAlexBackend:
     if _BACKEND == "bigquery":
         from backend.bigquery_backend import BigQueryBackend
         project = _keys.get("gcp-project") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
@@ -79,6 +80,7 @@ def _make_backend(edge_types: set[str]) -> OpenAlexBackend:
     return OpenAlexBackend(
         _client,
         edge_types=edge_types,
+        work_edge_types=work_edge_types,
         neighbor_cache=_neighbor_cache,
         on_cache_updated=_save_neighbor_cache,
     )
@@ -101,8 +103,12 @@ async def _collect_path(
     metadata (found, hops, and both endpoint names) so the caller can emit a `path`
     SSE event without re-deriving any of it.
     """
-    to_author = await _client.get_author(to_id)
-    to_name = to_author.get("display_name", to_id)
+    if _is_work_id(to_id):
+        to_obj = await _client.get_work(to_id)
+        to_name = to_obj.get("title", to_id)
+    else:
+        to_obj = await _client.get_author(to_id)
+        to_name = to_obj.get("display_name", to_id)
 
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -116,14 +122,19 @@ async def _collect_path(
             hops = event.get("hops")
             path = event["path"]
             for i, step in enumerate(path):
-                is_endpoint = step["author_id"] in (from_id, to_id)
+                sid = step["author_id"]
+                is_endpoint = sid in (from_id, to_id)
+                # A work can only ever be a path endpoint (its only edges are to
+                # its own authors/citers, never to another work) — never a mid-path node.
+                node_type = "work" if _is_work_id(sid) else ("origin" if is_endpoint else "path")
                 nodes.append({
-                    "id": step["author_id"],
+                    "id": sid,
                     "name": step["author_name"],
                     "institution": None,
                     "works_count": 0,
                     "cited_by_count": 0,
-                    "type": "origin" if is_endpoint else "path",
+                    "publication_year": None,
+                    "type": node_type,
                     "depth": 0,
                 })
                 if i < len(path) - 1 and step.get("connection_to_next"):
@@ -133,19 +144,24 @@ async def _collect_path(
                         "target": nxt["author_id"],
                         "type": step["connection_to_next"],
                         "label": step.get("label", ""),
+                        "direction": step.get("direction"),
                     })
                     steps.append({
                         "from_name": step["author_name"],
                         "to_name": nxt["author_name"],
                         "type": step["connection_to_next"],
                         "label": step.get("label", ""),
+                        "direction": step.get("direction"),
                     })
 
-    # The BFS only knows author ids + names, so path nodes would otherwise render
-    # as "0 works · 0 citations" with no institution. Backfill real metadata in a
-    # single batched lookup before returning.
-    if nodes:
-        authors = await _client.get_authors_batch([n["id"] for n in nodes])
+    # The BFS only knows ids + names, so path nodes would otherwise render as
+    # "0 works · 0 citations" with no institution. Backfill real metadata in a
+    # single batched lookup before returning — authors via get_authors_batch,
+    # and any work-typed endpoint (at most from_id/to_id, never a mid-path node)
+    # via get_work, reusing the to_id fetch already done above where possible.
+    author_node_ids = [n["id"] for n in nodes if n["type"] != "work"]
+    if author_node_ids:
+        authors = await _client.get_authors_batch(author_node_ids)
         meta = {_short_id(a["id"]): a for a in authors}
         for n in nodes:
             a = meta.get(n["id"])
@@ -153,6 +169,14 @@ async def _collect_path(
                 n["institution"] = _get_inst(a)
                 n["works_count"] = a.get("works_count", 0)
                 n["cited_by_count"] = a.get("cited_by_count", 0)
+
+    for n in nodes:
+        if n["type"] != "work":
+            continue
+        w = to_obj if n["id"] == to_id else await _client.get_work(n["id"])
+        n["cited_by_count"] = w.get("cited_by_count", 0)
+        n["publication_year"] = w.get("publication_year")
+        n["name"] = w.get("title", n["name"])
 
     return {
         "nodes": nodes,
@@ -167,9 +191,47 @@ async def _collect_path(
     }
 
 
-@app.get("/api/authors", response_model=list[AuthorResult])
-async def search_authors(q: str = Query(..., min_length=2)):
-    return await _client.search_authors(q)
+@app.get("/api/authors", response_model=PaginatedAuthors)
+async def search_authors(
+    q: str = Query(..., min_length=2),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=50),
+):
+    results, total = await _client.search_authors(q, page=page, per_page=per_page)
+    total_pages = max(1, math.ceil(total / per_page))
+    return PaginatedAuthors(
+        results=results, page=page, per_page=per_page,
+        total=total, total_pages=total_pages,
+    )
+
+
+@app.get("/api/works", response_model=PaginatedWorks)
+async def search_works(
+    q: str = Query(..., min_length=2),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=50),
+):
+    results, total = await _client.search_works(q, page=page, per_page=per_page)
+    total_pages = max(1, math.ceil(total / per_page))
+    return PaginatedWorks(
+        results=results, page=page, per_page=per_page,
+        total=total, total_pages=total_pages,
+    )
+
+
+@app.get("/api/authors/{author_id}/works", response_model=list[AuthorWork])
+async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge=1, le=25)):
+    works = await _client.get_author_works(author_id, limit=limit)
+    return [
+        AuthorWork(
+            id=_short_id(w["id"]),
+            title=w.get("title") or "(untitled)",
+            cited_by_count=w.get("cited_by_count", 0),
+            publication_year=w.get("publication_year"),
+            doi=w.get("doi"),
+        )
+        for w in works
+    ]
 
 
 @app.delete("/api/cache")
@@ -220,40 +282,55 @@ async def graph_expand(
     origin_ids: str = Query(default=""),   # comma-sep existing origin IDs
     path_ids: str = Query(default=""),     # comma-sep existing path node IDs from client
     edges: list[str] = Query(default=list(ALL_EDGE_TYPES)),
+    work_edges: list[str] = Query(default=list(ALL_WORK_EDGE_TYPES)),
     depth: int = Query(default=2, ge=0, le=4),   # neighborhood expansion depth (0 = path only)
     top_k: int = Query(default=8, ge=1, le=25),  # neighbors kept per expansion level
 ):
     from backend.graph_expand import expand_graph
 
     edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
+    work_edge_types = {e for e in work_edges if e in ALL_WORK_EDGE_TYPES} or ALL_WORK_EDGE_TYPES
     existing_origins = [x.strip() for x in origin_ids.split(",") if x.strip()]
     existing_path_ids = [x.strip() for x in path_ids.split(",") if x.strip()]
 
     async def event_stream():
-        # Fetch new researcher's metadata
+        # Fetch the new origin's metadata — a work (paper) or an author.
         try:
-            new_author = await _client.get_author(new_id)
+            new_obj = await (
+                _client.get_work(new_id) if _is_work_id(new_id) else _client.get_author(new_id)
+            )
         except Exception as exc:
             yield f"event: app_error\ndata: {json.dumps({'message': str(exc)})}\n\n"
             return
 
-        new_node = {
-            "id": new_id,
-            "name": new_author.get("display_name", new_id),
-            "institution": _get_inst(new_author),
-            "works_count": new_author.get("works_count", 0),
-            "cited_by_count": new_author.get("cited_by_count", 0),
-            "type": "origin",
-            "depth": 0,
-        }
+        if _is_work_id(new_id):
+            new_name = new_obj.get("title", new_id)
+            new_node = {
+                "id": new_id,
+                "name": new_name,
+                "cited_by_count": new_obj.get("cited_by_count", 0),
+                "publication_year": new_obj.get("publication_year"),
+                "type": "work",
+                "depth": 0,
+            }
+        else:
+            new_name = new_obj.get("display_name", new_id)
+            new_node = {
+                "id": new_id,
+                "name": new_name,
+                "institution": _get_inst(new_obj),
+                "works_count": new_obj.get("works_count", 0),
+                "cited_by_count": new_obj.get("cited_by_count", 0),
+                "type": "origin",
+                "depth": 0,
+            }
         yield f"event: node\ndata: {json.dumps(new_node)}\n\n"
 
-        backend = _make_backend(edge_types)
+        backend = _make_backend(edge_types, work_edge_types)
         new_path_node_ids: list[str] = []
 
         # Find paths from new researcher to all existing origins in parallel
         if existing_origins:
-            new_name = new_author.get("display_name", new_id)
             yield f"event: progress\ndata: {json.dumps({'message': f'Finding connections to {len(existing_origins)} existing researcher(s)…'})}\n\n"
 
             path_results = await asyncio.gather(*[
