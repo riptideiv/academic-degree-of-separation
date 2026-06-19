@@ -26,6 +26,12 @@ class GraphBackend(ABC):
 
 
 ALL_EDGE_TYPES = {"coauthor", "citation", "institution"}
+ALL_WORK_EDGE_TYPES = {"authorship", "citation"}
+
+
+def _is_work_id(id_: str) -> bool:
+    """OpenAlex IDs are prefix-typed: works start with 'W', authors with 'A'."""
+    return id_.startswith("W")
 
 
 class OpenAlexBackend(GraphBackend):
@@ -33,14 +39,16 @@ class OpenAlexBackend(GraphBackend):
         self,
         client: OpenAlexClient,
         edge_types: set[str] | None = None,
+        work_edge_types: set[str] | None = None,
         neighbor_cache: dict | None = None,
         on_cache_updated: "callable | None" = None,
     ):
         self._client = client
         self._edge_types = edge_types if edge_types is not None else ALL_EDGE_TYPES
-        # Shared ring cache: author_id → list[Connection] (all edge types).
-        # Populated with ALL_EDGE_TYPES so each ring is fetched once and reused
-        # across requests regardless of which edge types are currently active.
+        self._work_edge_types = work_edge_types if work_edge_types is not None else ALL_WORK_EDGE_TYPES
+        # Shared ring cache: id (author or work) → list[Connection] (all edge types).
+        # Populated with ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so each ring is fetched
+        # once and reused across requests regardless of which edge types are active.
         self._cache: dict[str, list[Connection]] = neighbor_cache if neighbor_cache is not None else {}
         # Called whenever new entries are written to the cache (e.g. to persist to disk).
         self._on_cache_updated = on_cache_updated
@@ -97,7 +105,7 @@ class OpenAlexBackend(GraphBackend):
             return_exceptions=True,
         )
 
-        connections: list[Connection] = []
+        incoming: dict[str, Connection] = {}
         for work_id, citing_or_exc in zip(work_ids, citing_results):
             if isinstance(citing_or_exc, Exception):
                 continue
@@ -106,21 +114,61 @@ class OpenAlexBackend(GraphBackend):
                 for authorship in citing_work.get("authorships", []):
                     citer_id = _short_id(authorship["author"]["id"])
                     if citer_id != author_id:
-                        connections.append(Connection(
+                        incoming[citer_id] = Connection(
                             target_author_id=citer_id,
                             target_name=authorship["author"]["display_name"],
                             connection_type="citation",
+                            direction="incoming",
                             label=title,
-                        ))
+                        )
+
+        referenced_ids = {
+            _short_id(rid) for w in works for rid in w.get("referenced_works", [])
+        }
+        outgoing: dict[str, Connection] = {}
+        if referenced_ids:
+            referenced_details = await self._client.get_works_batch(list(referenced_ids))
+            for rwork in referenced_details:
+                rtitle = rwork.get("title") or "Untitled"
+                for authorship in rwork.get("authorships", []):
+                    author = authorship.get("author")
+                    if not author or not author.get("id"):
+                        continue
+                    target_id = _short_id(author["id"])
+                    if target_id == author_id:
+                        continue
+                    outgoing[target_id] = Connection(
+                        target_author_id=target_id,
+                        target_name=author.get("display_name", ""),
+                        connection_type="citation",
+                        direction="outgoing",
+                        label=rtitle,
+                    )
+
+        connections: list[Connection] = []
+        for target_id in set(incoming) | set(outgoing):
+            inc, out = incoming.get(target_id), outgoing.get(target_id)
+            if inc and out:
+                connections.append(Connection(
+                    target_author_id=target_id,
+                    target_name=inc.target_name or out.target_name,
+                    connection_type="citation",
+                    direction="mutual",
+                    label=inc.label,
+                ))
+            else:
+                connections.append(inc or out)
         return connections
 
-    async def get_neighbors_batch(self, author_ids: list[str]) -> dict[str, list[Connection]]:
+    async def get_neighbors_batch(self, ids: list[str]) -> dict[str, list[Connection]]:
         """
-        Return neighbors for all author_ids, using the ring cache where available.
-        Uncached authors are fetched with ALL_EDGE_TYPES and stored; results are then
-        filtered to self._edge_types before returning.
+        Return neighbors for all ids (author or work), using the ring cache where
+        available. Uncached ids are fetched with ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES
+        and stored; results are then filtered to the type-appropriate active set
+        before returning (self._work_edge_types for work ids, self._edge_types for
+        author ids — dispatched by OpenAlex ID prefix).
         """
-        uncached = [aid for aid in author_ids if aid not in self._cache]
+        uncached = [i for i in ids if i not in self._cache]
 
         if uncached:
             fresh = await self._fetch_neighbors_batch(uncached)
@@ -128,24 +176,32 @@ class OpenAlexBackend(GraphBackend):
             if self._on_cache_updated:
                 self._on_cache_updated()
 
-        return {
-            aid: [c for c in self._cache.get(aid, []) if c.connection_type in self._edge_types]
-            for aid in author_ids
-        }
+        result: dict[str, list[Connection]] = {}
+        for i in ids:
+            active = self._work_edge_types if _is_work_id(i) else self._edge_types
+            result[i] = [c for c in self._cache.get(i, []) if c.connection_type in active]
+        return result
 
-    async def _fetch_neighbors_batch(self, author_ids: list[str]) -> dict[str, list[Connection]]:
+    async def _fetch_neighbors_batch(self, ids: list[str]) -> dict[str, list[Connection]]:
         """
-        Fetch ALL connection types for the given authors (no cache check).
-        Always uses ALL_EDGE_TYPES so each stored ring is complete.
+        Fetch ALL connection types for the given ids (no cache check), splitting
+        work ids from author ids so each routes through its own neighbor logic.
+        Always uses ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so each stored ring is complete.
         """
-        tasks = [
-            self._batch_works_connections(author_ids, edge_types=ALL_EDGE_TYPES),
-            self._batch_institutions(author_ids),
-        ]
+        work_ids = [i for i in ids if _is_work_id(i)]
+        author_ids = [i for i in ids if not _is_work_id(i)]
+
+        tasks = []
+        if author_ids:
+            tasks.append(self._batch_works_connections(author_ids, edge_types=ALL_EDGE_TYPES))
+            tasks.append(self._batch_institutions(author_ids))
+        if work_ids:
+            tasks.append(self._batch_work_neighbors(work_ids, edge_types=ALL_WORK_EDGE_TYPES))
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        by_source: dict[str, list[Connection]] = {aid: [] for aid in author_ids}
-        seen: dict[str, set[str]] = {aid: set() for aid in author_ids}
+        by_source: dict[str, list[Connection]] = {i: [] for i in ids}
+        seen: dict[str, set[str]] = {i: set() for i in ids}
 
         for batch_result in results:
             if isinstance(batch_result, Exception):
@@ -170,6 +226,8 @@ class OpenAlexBackend(GraphBackend):
         works = await self._client.get_works_by_authors(author_ids)
 
         work_to_sources: dict[str, tuple[str, list[str]]] = {}
+        # referenced (cited) work id -> frontier authors whose own paper cites it
+        referenced_to_sources: dict[str, list[str]] = {}
         for work in works:
             work_id = _short_id(work["id"])
             title = work.get("title") or "Untitled"
@@ -193,8 +251,17 @@ class OpenAlexBackend(GraphBackend):
 
             if "citation" in et and frontier_in_work:
                 work_to_sources[work_id] = (title, frontier_in_work)
+                for ref_id in {_short_id(rid) for rid in work.get("referenced_works", [])}:
+                    referenced_to_sources.setdefault(ref_id, []).extend(frontier_in_work)
 
-        if "citation" in et and work_to_sources:
+        if "citation" not in et:
+            return by_source
+        if not work_to_sources and not referenced_to_sources:
+            return by_source
+
+        # incoming: papers that cite our frontier's own works (src is cited)
+        incoming: dict[str, dict[str, Connection]] = {aid: {} for aid in author_ids}
+        if work_to_sources:
             citing_papers = await self._client.get_citing_works_for_works(
                 list(work_to_sources.keys())[:50]
             )
@@ -210,12 +277,116 @@ class OpenAlexBackend(GraphBackend):
                     for work_id in referenced & work_to_sources.keys():
                         title, src_ids = work_to_sources[work_id]
                         for src_id in src_ids:
-                            by_source[src_id].append(Connection(
+                            incoming[src_id][citer_id] = Connection(
                                 target_author_id=citer_id,
                                 target_name=citer_name,
                                 connection_type="citation",
+                                direction="incoming",
                                 label=title,
-                            ))
+                            )
+
+        # outgoing: works our frontier's own papers reference (src is the citer)
+        outgoing: dict[str, dict[str, Connection]] = {aid: {} for aid in author_ids}
+        if referenced_to_sources:
+            referenced_details = await self._client.get_works_batch(
+                list(referenced_to_sources.keys())[:50]
+            )
+            for rwork in referenced_details:
+                rwork_id = _short_id(rwork["id"])
+                src_ids = referenced_to_sources.get(rwork_id, [])
+                if not src_ids:
+                    continue
+                rtitle = rwork.get("title") or "Untitled"
+                for authorship in rwork.get("authorships", []):
+                    author = authorship.get("author")
+                    if not author or not author.get("id"):
+                        continue
+                    target_id = _short_id(author["id"])
+                    if target_id in author_set:
+                        continue
+                    target_name = author.get("display_name", "")
+                    for src_id in src_ids:
+                        outgoing[src_id][target_id] = Connection(
+                            target_author_id=target_id,
+                            target_name=target_name,
+                            connection_type="citation",
+                            direction="outgoing",
+                            label=rtitle,
+                        )
+
+        # Merge per (src, target): if both directions were found, collapse into a
+        # single "mutual" Connection now, before the generic target-id dedup in
+        # _fetch_neighbors_batch would otherwise silently drop one direction.
+        for src_id in author_ids:
+            for target_id in set(incoming[src_id]) | set(outgoing[src_id]):
+                inc = incoming[src_id].get(target_id)
+                out = outgoing[src_id].get(target_id)
+                if inc and out:
+                    by_source[src_id].append(Connection(
+                        target_author_id=target_id,
+                        target_name=inc.target_name or out.target_name,
+                        connection_type="citation",
+                        direction="mutual",
+                        label=inc.label,
+                    ))
+                else:
+                    by_source[src_id].append(inc or out)
+
+        return by_source
+
+    async def _batch_work_neighbors(
+        self, work_ids: list[str], *, edge_types: set[str] | None = None
+    ) -> dict[str, list[Connection]]:
+        """
+        Work-origin neighbors: only its direct authors ("authorship") and authors
+        who directly cited it ("citation", always direction="incoming" since a
+        work node never cites anything itself in this model).
+        """
+        et = edge_types if edge_types is not None else self._work_edge_types
+        by_source: dict[str, list[Connection]] = {wid: [] for wid in work_ids}
+
+        works = await self._client.get_works_batch(work_ids)
+        meta = {_short_id(w["id"]): w for w in works}
+
+        if "authorship" in et:
+            for wid in work_ids:
+                w = meta.get(wid)
+                if not w:
+                    continue
+                title = w.get("title") or "Untitled"
+                for authorship in w.get("authorships", []):
+                    author = authorship.get("author")
+                    if not author or not author.get("id"):
+                        continue
+                    by_source[wid].append(Connection(
+                        target_author_id=_short_id(author["id"]),
+                        target_name=author.get("display_name", ""),
+                        connection_type="authorship",
+                        label=title,
+                    ))
+
+        if "citation" in et:
+            citing_papers = await self._client.get_citing_works_for_works(work_ids)
+            work_id_set = set(work_ids)
+            for paper in citing_papers:
+                referenced = {_short_id(r) for r in paper.get("referenced_works", [])} & work_id_set
+                if not referenced:
+                    continue
+                for authorship in paper.get("authorships", []):
+                    author = authorship.get("author")
+                    if not author or not author.get("id"):
+                        continue
+                    citer_id = _short_id(author["id"])
+                    citer_name = author.get("display_name", "")
+                    for wid in referenced:
+                        title = (meta.get(wid) or {}).get("title") or "Untitled"
+                        by_source[wid].append(Connection(
+                            target_author_id=citer_id,
+                            target_name=citer_name,
+                            connection_type="citation",
+                            direction="incoming",
+                            label=title,
+                        ))
 
         return by_source
 

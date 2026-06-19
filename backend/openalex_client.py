@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 
-from backend.models import AuthorResult
+from backend.models import AuthorResult, WorkResult
 
 API_BASE = "https://api.openalex.org"
 _DEFAULT_KEY_PATH = Path(__file__).parent.parent / "api-keys.json"
@@ -74,8 +74,15 @@ class OpenAlexClient:
             return resp.json()
         resp.raise_for_status()
 
-    async def search_authors(self, query: str, limit: int = 5) -> list[AuthorResult]:
-        data = await self._get(f"{API_BASE}/authors", {"search": query, "per_page": limit})
+    async def search_authors(
+        self, query: str, page: int = 1, per_page: int = 20
+    ) -> tuple[list[AuthorResult], int]:
+        data = await self._get(f"{API_BASE}/authors", {
+            "search": query,
+            "page": page,
+            "per_page": per_page,
+            "select": "id,display_name,last_known_institutions,works_count,cited_by_count",
+        })
         results = []
         for item in data.get("results", []):
             institution = None
@@ -86,8 +93,10 @@ class OpenAlexClient:
                 display_name=item["display_name"],
                 institution=institution,
                 works_count=item.get("works_count", 0),
+                cited_by_count=item.get("cited_by_count", 0),
             ))
-        return results
+        total = data.get("meta", {}).get("count", len(results))
+        return results, total
 
     async def get_author(self, author_id: str) -> dict:
         return await self._get(f"{API_BASE}/authors/{author_id}", {})
@@ -97,6 +106,7 @@ class OpenAlexClient:
             "filter": f"authorships.author.id:{author_id}",
             "per_page": limit,
             "sort": "cited_by_count:desc",
+            "select": "id,title,cited_by_count,publication_year,doi,referenced_works",
         })
         return data.get("results", [])
 
@@ -126,6 +136,26 @@ class OpenAlexClient:
                 "filter": f"authorships.author.id:{'|'.join(chunk)}",
                 "per_page": per_chunk,
                 "sort": "cited_by_count:desc",
+                "select": "id,title,authorships,referenced_works",
+            })
+            for chunk in chunk_list
+        ], return_exceptions=True)
+        combined: list[dict] = []
+        for r in results:
+            if not isinstance(r, Exception):
+                combined.extend(r.get("results", []))
+        return combined
+
+    async def get_works_batch(self, work_ids: list[str], limit: int = 200) -> list[dict]:
+        """Fetch multiple work records by ID (title + authorships); chunks large lists."""
+        if not work_ids:
+            return []
+        chunk_list = list(_chunks(work_ids, _FILTER_CHUNK))
+        per_chunk = min(limit, 200)
+        results = await asyncio.gather(*[
+            self._get(f"{API_BASE}/works", {
+                "filter": f"ids.openalex:{'|'.join(chunk)}",
+                "per_page": per_chunk,
                 "select": "id,title,authorships",
             })
             for chunk in chunk_list
@@ -135,6 +165,36 @@ class OpenAlexClient:
             if not isinstance(r, Exception):
                 combined.extend(r.get("results", []))
         return combined
+
+    async def get_work(self, work_id: str) -> dict:
+        return await self._get(f"{API_BASE}/works/{work_id}", {})
+
+    async def search_works(
+        self, query: str, page: int = 1, per_page: int = 20
+    ) -> tuple[list[WorkResult], int]:
+        data = await self._get(f"{API_BASE}/works", {
+            "search": query,
+            "page": page,
+            "per_page": per_page,
+            "select": "id,title,publication_year,cited_by_count,authorships,doi",
+        })
+        results = []
+        for item in data.get("results", []):
+            author_names = [
+                a["author"]["display_name"]
+                for a in item.get("authorships", [])
+                if a.get("author") and a["author"].get("display_name")
+            ]
+            results.append(WorkResult(
+                id=_short_id(item["id"]),
+                title=item.get("title") or "(untitled)",
+                publication_year=item.get("publication_year"),
+                cited_by_count=item.get("cited_by_count", 0),
+                author_names=author_names,
+                doi=item.get("doi"),
+            ))
+        total = data.get("meta", {}).get("count", len(results))
+        return results, total
 
     async def get_citing_works_for_works(self, work_ids: list[str], limit: int = 50) -> list[dict]:
         """Fetch papers that cite any of the given works; chunks large lists."""
