@@ -50,6 +50,8 @@ class OpenAlexBackend(GraphBackend):
         # Populated with ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so each ring is fetched
         # once and reused across requests regardless of which edge types are active.
         self._cache: dict[str, list[Connection]] = neighbor_cache if neighbor_cache is not None else {}
+        # Deduplicate overlapping cache misses from parallel path searches.
+        self._cache_locks: dict[str, asyncio.Lock] = {}
         # Called whenever new entries are written to the cache (e.g. to persist to disk).
         self._on_cache_updated = on_cache_updated
 
@@ -168,13 +170,24 @@ class OpenAlexBackend(GraphBackend):
         before returning (self._work_edge_types for work ids, self._edge_types for
         author ids — dispatched by OpenAlex ID prefix).
         """
-        uncached = [i for i in ids if i not in self._cache]
+        locks: list[asyncio.Lock] = []
+        try:
+            for i in sorted(set(ids)):
+                if i in self._cache:
+                    continue
+                lock = self._cache_locks.setdefault(i, asyncio.Lock())
+                await lock.acquire()
+                locks.append(lock)
 
-        if uncached:
-            fresh = await self._fetch_neighbors_batch(uncached)
-            self._cache.update(fresh)
-            if self._on_cache_updated:
-                self._on_cache_updated()
+            uncached = [i for i in ids if i not in self._cache]
+            if uncached:
+                fresh = await self._fetch_neighbors_batch(uncached)
+                self._cache.update(fresh)
+                if self._on_cache_updated:
+                    self._on_cache_updated()
+        finally:
+            for lock in reversed(locks):
+                lock.release()
 
         result: dict[str, list[Connection]] = {}
         for i in ids:
@@ -236,7 +249,7 @@ class OpenAlexBackend(GraphBackend):
                 for a in work.get("authorships", [])
                 if a.get("author") and a["author"].get("id")
             }
-            frontier_in_work = [aid for aid in author_ids if aid in work_author_map]
+            frontier_in_work = [aid for aid in work_author_map if aid in author_set]
 
             if "coauthor" in et:
                 for src_id in frontier_in_work:
