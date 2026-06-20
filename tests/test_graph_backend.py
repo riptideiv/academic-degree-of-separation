@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock
 from backend.graph_backend import OpenAlexBackend
@@ -188,6 +190,32 @@ async def test_batch_failed_subquery_returns_empty():
     backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
     result = await backend.get_neighbors_batch(["A1"])
     assert result["A1"] == []
+
+
+async def test_concurrent_overlapping_batches_share_cache_miss():
+    mock_client = AsyncMock()
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    async def slow_works(_author_ids):
+        fetch_started.set()
+        await release_fetch.wait()
+        return []
+
+    mock_client.get_works_by_authors.side_effect = slow_works
+    mock_client.get_authors_batch.return_value = []
+
+    backend = OpenAlexBackend(mock_client)
+    first = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
+    await fetch_started.wait()
+    second = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
+    await asyncio.sleep(0)
+    release_fetch.set()
+
+    assert await first == {"A1": []}
+    assert await second == {"A1": []}
+    mock_client.get_works_by_authors.assert_awaited_once_with(["A1"])
+    mock_client.get_authors_batch.assert_awaited_once_with(["A1"])
 
 
 async def test_citation_neighbors():
