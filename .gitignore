@@ -8,3 +8,4 @@ __pycache__/
 venv/
 .superpowers/
 neighbor_cache.json
+CLAUDE.md

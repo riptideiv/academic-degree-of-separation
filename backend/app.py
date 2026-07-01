@@ -191,6 +191,11 @@ async def _collect_path(
     }
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/api/authors", response_model=PaginatedAuthors)
 async def search_authors(
     q: str = Query(..., min_length=2),
