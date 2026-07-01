@@ -3,7 +3,14 @@ import json
 import logging
 import math
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load local env vars (e.g. SUPABASE_DB_URL) from .env.local so local runs mirror
+# Render. override=False means real environment vars (Render's) always win.
+load_dotenv(Path(__file__).parent.parent / ".env.local", override=False)
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +19,13 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.bfs import find_path
 from backend.graph_backend import ALL_EDGE_TYPES, ALL_WORK_EDGE_TYPES, OpenAlexBackend, _is_work_id
-from backend.models import AuthorResult, AuthorWork, Connection, PaginatedAuthors, PaginatedWorks
+from backend.models import AuthorResult, AuthorWork, PaginatedAuthors, PaginatedWorks
+from backend.neighbor_store import (
+    JsonNeighborStore,
+    NeighborCache,
+    NeighborStore,
+    SupabaseNeighborStore,
+)
 from backend.openalex_client import OpenAlexClient, _short_id
 
 log = logging.getLogger(__name__)
@@ -32,39 +45,37 @@ _keys: dict = json.loads(_KEY_PATH.read_text()) if _KEY_PATH.exists() else {}
 _client = OpenAlexClient()
 _BACKEND = os.environ.get("BACKEND", "openalex")
 
-# ── Neighbor cache persistence ─────────────────────────────────────────────────
-# The cache maps author_id → list[Connection] and survives server restarts by
-# being serialised to a JSON file alongside the app.  Each Connection is stored
-# as its Pydantic dict so round-tripping is lossless.
+# ── Neighbor cache ─────────────────────────────────────────────────────────────
+# A bounded in-memory LRU (`NeighborCache`) fronts a durable NeighborStore, so the
+# process footprint stays flat under load instead of holding the whole table
+# resident. On an LRU miss the store is consulted per-id; only a true miss hits
+# OpenAlex. Setting SUPABASE_DB_URL (or `supabase-db-url` in api-keys.json)
+# selects the Postgres-backed store (survives Render's ephemeral FS); otherwise a
+# local JSON file is used. NEIGHBOR_CACHE_MAX caps the resident entry count.
 
 _CACHE_FILE = Path(__file__).parent.parent / "neighbor_cache.json"
+_CACHE_MAX = int(os.environ.get("NEIGHBOR_CACHE_MAX", "10000"))
 
-def _load_neighbor_cache() -> dict:
-    if not _CACHE_FILE.exists():
-        return {}
-    try:
-        raw = json.loads(_CACHE_FILE.read_text())
-        return {
-            aid: [Connection(**c) for c in conns]
-            for aid, conns in raw.items()
-        }
-    except Exception as exc:
-        log.warning("Could not load neighbor cache from disk: %s", exc)
-        return {}
 
-def _save_neighbor_cache() -> None:
-    try:
-        serialisable = {
-            aid: [c.model_dump() for c in conns]
-            for aid, conns in _neighbor_cache.items()
-        }
-        _CACHE_FILE.write_text(json.dumps(serialisable))
-    except Exception as exc:
-        log.warning("Could not save neighbor cache to disk: %s", exc)
+def _make_store() -> NeighborStore:
+    dsn = _keys.get("supabase-db-url") or os.environ.get("SUPABASE_DB_URL")
+    if dsn:
+        return SupabaseNeighborStore(dsn)
+    return JsonNeighborStore(_CACHE_FILE)
 
-# Shared ring cache — persists across server restarts via _CACHE_FILE.
-# Maps author_id → list[Connection] (all edge types stored, filtered on retrieval).
-_neighbor_cache: dict = _load_neighbor_cache()
+
+_store: NeighborStore = _make_store()
+_cache = NeighborCache(_store, max_size=_CACHE_MAX)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await _store.open()
+    yield
+    await _store.close()
+
+
+app.router.lifespan_context = lifespan
 
 
 def _make_backend(edge_types: set[str], work_edge_types: set[str] | None = None) -> OpenAlexBackend:
@@ -81,8 +92,7 @@ def _make_backend(edge_types: set[str], work_edge_types: set[str] | None = None)
         _client,
         edge_types=edge_types,
         work_edge_types=work_edge_types,
-        neighbor_cache=_neighbor_cache,
-        on_cache_updated=_save_neighbor_cache,
+        neighbor_cache=_cache,
     )
 
 
@@ -241,10 +251,8 @@ async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge
 
 @app.delete("/api/cache")
 async def clear_cache():
-    """Wipe the server-side neighbor cache (in-memory + on-disk)."""
-    _neighbor_cache.clear()
-    if _CACHE_FILE.exists():
-        _CACHE_FILE.unlink()
+    """Wipe the server-side neighbor cache (in-memory LRU + persisted store)."""
+    await _cache.clear()
     return {"cleared": True}
 
 
