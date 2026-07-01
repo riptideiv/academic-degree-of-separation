@@ -3,6 +3,7 @@ import logging
 from abc import ABC, abstractmethod
 
 from backend.models import Connection
+from backend.neighbor_store import NeighborCache
 from backend.openalex_client import OpenAlexClient, _short_id
 
 log = logging.getLogger(__name__)
@@ -40,20 +41,18 @@ class OpenAlexBackend(GraphBackend):
         client: OpenAlexClient,
         edge_types: set[str] | None = None,
         work_edge_types: set[str] | None = None,
-        neighbor_cache: dict | None = None,
-        on_cache_updated: "callable | None" = None,
+        neighbor_cache: NeighborCache | None = None,
     ):
         self._client = client
         self._edge_types = edge_types if edge_types is not None else ALL_EDGE_TYPES
         self._work_edge_types = work_edge_types if work_edge_types is not None else ALL_WORK_EDGE_TYPES
-        # Shared ring cache: id (author or work) → list[Connection] (all edge types).
-        # Populated with ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so each ring is fetched
-        # once and reused across requests regardless of which edge types are active.
-        self._cache: dict[str, list[Connection]] = neighbor_cache if neighbor_cache is not None else {}
+        # Shared ring cache: bounded LRU in front of a durable store. Rings hold all
+        # edge types (ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES) so each id is fetched once
+        # and reused regardless of which edge types are active. Default (no store,
+        # unbounded) keeps the original always-in-memory behavior for tests.
+        self._cache = neighbor_cache if neighbor_cache is not None else NeighborCache()
         # Deduplicate overlapping cache misses from parallel path searches.
         self._cache_locks: dict[str, asyncio.Lock] = {}
-        # Called whenever new entries are written to the cache (e.g. to persist to disk).
-        self._on_cache_updated = on_cache_updated
 
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         tasks = []
@@ -164,27 +163,49 @@ class OpenAlexBackend(GraphBackend):
 
     async def get_neighbors_batch(self, ids: list[str]) -> dict[str, list[Connection]]:
         """
-        Return neighbors for all ids (author or work), using the ring cache where
-        available. Uncached ids are fetched with ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES
-        and stored; results are then filtered to the type-appropriate active set
-        before returning (self._work_edge_types for work ids, self._edge_types for
-        author ids — dispatched by OpenAlex ID prefix).
+        Return neighbors for all ids (author or work). Reads walk the cache layers
+        in order — in-memory LRU, then the durable store, then OpenAlex — with each
+        id fetched under ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so its ring is complete;
+        results are filtered to the type-appropriate active set before returning
+        (self._work_edge_types for work ids, self._edge_types for author ids —
+        dispatched by OpenAlex ID prefix).
         """
+        unique = sorted(set(ids))
+        resolved: dict[str, list[Connection]] = {}
+
+        # 1) In-memory hits (sync, LRU-touch) — no lock needed.
+        for i in unique:
+            hit = self._cache.get_memory(i)
+            if hit is not None:
+                resolved[i] = hit
+
+        misses = [i for i in unique if i not in resolved]  # sorted → consistent lock order
         locks: list[asyncio.Lock] = []
         try:
-            for i in sorted(set(ids)):
-                if i in self._cache:
-                    continue
+            for i in misses:
                 lock = self._cache_locks.setdefault(i, asyncio.Lock())
                 await lock.acquire()
                 locks.append(lock)
 
-            uncached = [i for i in ids if i not in self._cache]
-            if uncached:
-                fresh = await self._fetch_neighbors_batch(uncached)
-                self._cache.update(fresh)
-                if self._on_cache_updated:
-                    self._on_cache_updated()
+            # 2) Re-check memory: a concurrent fetch may have filled it while we waited.
+            pending = []
+            for i in misses:
+                hit = self._cache.get_memory(i)
+                if hit is not None:
+                    resolved[i] = hit
+                else:
+                    pending.append(i)
+
+            # 3) Durable store, then 4) OpenAlex for whatever's still missing.
+            if pending:
+                from_store = await self._cache.fetch_from_store(pending)
+                resolved.update(from_store)
+                still_missing = [i for i in pending if i not in from_store]
+                if still_missing:
+                    fresh = await self._fetch_neighbors_batch(still_missing)
+                    self._cache.put(fresh)
+                    for i in still_missing:
+                        resolved[i] = fresh.get(i, [])
         finally:
             for lock in reversed(locks):
                 lock.release()
@@ -192,7 +213,7 @@ class OpenAlexBackend(GraphBackend):
         result: dict[str, list[Connection]] = {}
         for i in ids:
             active = self._work_edge_types if _is_work_id(i) else self._edge_types
-            result[i] = [c for c in self._cache.get(i, []) if c.connection_type in active]
+            result[i] = [c for c in resolved.get(i, []) if c.connection_type in active]
         return result
 
     async def _fetch_neighbors_batch(self, ids: list[str]) -> dict[str, list[Connection]]:
