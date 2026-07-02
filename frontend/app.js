@@ -847,6 +847,48 @@
   }
 
   // ── Graph helpers ──────────────────────────────────────────────────────────
+  // Centroid of the origin nodes currently on canvas (falls back to the center).
+  function originsCentroid() {
+    const origins = cy.nodes('[type="origin"]');
+    if (!origins.length) return { x: 0, y: 0 };
+    let sx = 0, sy = 0;
+    origins.forEach(o => { const p = o.position(); sx += p.x; sy += p.y; });
+    return { x: sx / origins.length, y: sy / origins.length };
+  }
+
+  // Pick a starting position for a freshly-streamed node so it appears next to
+  // its parent instead of piling at (0,0). Expansion nodes ring their owner
+  // origin (further out with depth); path nodes sit at their pair's midpoint;
+  // everything else falls back to the origin centroid. A jitter breaks up
+  // overlap and gives fCoSE a good starting point to relax from.
+  function seedPosition(nodeData) {
+    const jitter = r => (Math.random() - 0.5) * 2 * r;
+    const near = (p, r) => ({ x: p.x + jitter(r), y: p.y + jitter(r) });
+
+    if (nodeData.type === 'expansion') {
+      const owners = nodeData.expandOwners || [];
+      for (const oid of owners) {
+        const owner = cy.getElementById(oid);
+        if (owner.length) {
+          const depth = nodeData.depth || 1;
+          return near(owner.position(), 60 + depth * 40);
+        }
+      }
+    }
+    if (nodeData.type === 'path') {
+      const pair = nodeData.path_pair || (nodeData.pathPairs || [])[0];
+      if (pair) {
+        const a = cy.getElementById(pair.from_id);
+        const b = cy.getElementById(pair.to_id);
+        if (a.length && b.length) {
+          const pa = a.position(), pb = b.position();
+          return near({ x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 }, 40);
+        }
+      }
+    }
+    return near(originsCentroid(), 120);
+  }
+
   function addOrUpdateNode(nodeData) {
     if (nodeData.type === 'expansion') {
       const depth = nodeData.depth || 1;
@@ -880,7 +922,11 @@
       }
       return;
     }
-    cy.add({ group: 'nodes', data: { ...nodeData } });
+    // Seed a starting position near the node's parent so it appears in a sensible
+    // spot immediately (origins are placed/pinned by the layout, so skip them).
+    const el = { group: 'nodes', data: { ...nodeData } };
+    if (nodeData.type !== 'origin') el.position = seedPosition(nodeData);
+    cy.add(el);
     if (nodeData.type === 'path') state.pathNodes.add(nodeData.id);
   }
 
@@ -947,14 +993,31 @@
       const source = new EventSource(`${API_BASE}/api/graph/expand?${params}`);
       state.activeSource = source;
 
+      // Throttle incremental layout runs while events stream in: coalesce bursts
+      // but force a run at least every `maxWait` ms so the graph visibly grows
+      // *during* a long stream rather than only settling at the end.
+      let growTimer = null, growForce = null;
+      const growWait = 250, maxWait = 600;
+      const scheduleGrow = () => {
+        const now = Date.now();
+        if (growForce === null) growForce = now + maxWait;
+        clearTimeout(growTimer);
+        const delay = Math.min(growWait, Math.max(0, growForce - now));
+        growTimer = setTimeout(() => {
+          growTimer = null; growForce = null;
+          runLayoutIncremental();
+        }, delay);
+      };
+
       const finish = () => {
+        clearTimeout(growTimer); growTimer = null; growForce = null;
         if (state.activeSource === source) state.activeSource = null;
         setLoading(false);
         resolve();
       };
 
-      source.addEventListener('node', e => addOrUpdateNode(JSON.parse(e.data)));
-      source.addEventListener('edge', e => addEdge(JSON.parse(e.data)));
+      source.addEventListener('node', e => { addOrUpdateNode(JSON.parse(e.data)); scheduleGrow(); });
+      source.addEventListener('edge', e => { addEdge(JSON.parse(e.data)); scheduleGrow(); });
 
       source.addEventListener('path', e => {
         const d = JSON.parse(e.data);
@@ -967,6 +1030,7 @@
         showProgress(`Building neighborhood (depth ${data.depth}/3)…`);
         data.nodes.forEach(addOrUpdateNode);
         data.edges.forEach(addEdge);
+        scheduleGrow();
       });
 
       source.addEventListener('progress', e => {
@@ -979,7 +1043,8 @@
         rescaleExpansionNodes();
         applyNameVisibility();
         applyEdgeFade();
-        runLayout();
+        // Final settle: relax + frame the already-grown graph without a re-shuffle.
+        runLayoutIncremental({ fit: true });
         finish();
       });
 
@@ -1038,17 +1103,16 @@
     };
   }
 
-  function runLayout() {
-    if (!cy.nodes().length) return;
-    const lp = getLayoutParams();
-
-    // Pin the origin researchers symmetrically around the center so they sit in
-    // the middle and their neighborhoods spring outward. The separation grows
-    // with graph size (and the Spacing slider) so big neighborhoods don't pile up.
+  // Pin the origin researchers symmetrically around the center so they sit in
+  // the middle and their neighborhoods spring outward. The separation grows
+  // with graph size (and the Spacing slider) so big neighborhoods don't pile up.
+  // Returns an fCoSE `fixedNodeConstraint` array; shared by the full and
+  // incremental layouts so origins stay anchored in the same spots.
+  function originConstraints(lp) {
     const origins = cy.nodes('[type="origin"]');
     const n = origins.length;
     const spread = Math.round((140 + Math.sqrt(cy.nodes().length) * 26) * lp.spreadFactor);
-    const fixed = origins.map((node, i) => {
+    return origins.map((node, i) => {
       let position;
       if (n <= 1) position = { x: 0, y: 0 };
       else if (n === 2) position = { x: i === 0 ? -spread : spread, y: 0 };
@@ -1058,6 +1122,39 @@
       }
       return { nodeId: node.id(), position };
     });
+  }
+
+  // Incremental (non-destructive) layout used while the stream is arriving and
+  // for the final settle: keeps every node's current position (randomize:false)
+  // and only relaxes the newly-seeded nodes outward, so the graph visibly grows
+  // instead of re-shuffling. Cheaper than runLayout (fewer iterations, shorter
+  // animation). `fit` frames the viewport (used once at the end).
+  function runLayoutIncremental({ fit = false } = {}) {
+    if (!cy.nodes().length) return;
+    if (!(window.cytoscapeFcose && cytoscape.__fcoseRegistered)) return;
+    const lp = getLayoutParams();
+    cy.layout({
+      name: 'fcose',
+      quality: 'default',
+      animate: true,
+      animationDuration: 250,
+      randomize: false,
+      fit,
+      padding: 60,
+      nodeSeparation: lp.separation,
+      idealEdgeLength: lp.edgeLength,
+      nodeRepulsion: lp.repulsion,
+      gravity: 0.12,
+      gravityRange: 4.0,
+      fixedNodeConstraint: originConstraints(lp),
+      numIter: 500,
+    }).run();
+  }
+
+  function runLayout() {
+    if (!cy.nodes().length) return;
+    const lp = getLayoutParams();
+    const fixed = originConstraints(lp);
 
     if (window.cytoscapeFcose && cytoscape.__fcoseRegistered) {
       // Origins are pinned, so gravity can stay low; repulsion and node separation
