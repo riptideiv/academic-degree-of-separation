@@ -1128,8 +1128,9 @@
   // for the final settle: keeps every node's current position (randomize:false)
   // and only relaxes the newly-seeded nodes outward, so the graph visibly grows
   // instead of re-shuffling. Cheaper than runLayout (fewer iterations, shorter
-  // animation). `fit` frames the viewport (used once at the end).
-  function runLayoutIncremental({ fit = false } = {}) {
+  // animation). `fit` re-frames the viewport so the full graph always stays
+  // comfortably centered as it grows (generous padding); on by default.
+  function runLayoutIncremental({ fit = true } = {}) {
     if (!cy.nodes().length) return;
     if (!(window.cytoscapeFcose && cytoscape.__fcoseRegistered)) return;
     const lp = getLayoutParams();
@@ -1140,7 +1141,7 @@
       animationDuration: 250,
       randomize: false,
       fit,
-      padding: 60,
+      padding: 90,
       nodeSeparation: lp.separation,
       idealEdgeLength: lp.edgeLength,
       nodeRepulsion: lp.repulsion,
@@ -1167,7 +1168,7 @@
         animationDuration: 700,
         randomize: true,
         fit: true,
-        padding: 60,
+        padding: 90,
         nodeSeparation: lp.separation,
         idealEdgeLength: lp.edgeLength,
         nodeRepulsion: lp.repulsion,
@@ -1191,7 +1192,7 @@
       componentSpacing: 160,
       randomize: true,
       fit: true,
-      padding: 60,
+      padding: 90,
     }).run();
   }
 
