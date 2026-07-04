@@ -421,6 +421,7 @@ body {
 .legend-solid  { border-top-style: solid; }
 .legend-dashed { border-top-style: dashed; }
 .legend-dotted { border-top-style: dotted; }
+.legend-authorship { border-top-color: #7fae8e; }
 
 /* ── Author search modal ─────────────────────────────────────────────────── */
 #search-modal { position: fixed; inset: 0; z-index: 500; }

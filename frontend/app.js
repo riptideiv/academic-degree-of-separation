@@ -207,9 +207,11 @@
         selector: 'node:selected',
         style: { 'border-width': 2, 'border-color': '#222' },
       },
-      // One shared dark color for all edge types; the dash pattern (not color)
-      // says which type an edge is: solid = co-author, long dash = citation,
-      // short dash = institution. Depth-based opacity still fades the periphery.
+      // One shared dark color for researcher-to-researcher edges; the dash
+      // pattern (not color) says which type an edge is: solid = co-author,
+      // long dash = citation, short dash = institution. Authorship (work →
+      // author) edges keep their own green so they read apart from co-author
+      // edges. Depth-based opacity still fades the periphery.
       {
         selector: 'edge',
         style: {
@@ -250,7 +252,7 @@
       },
       {
         selector: 'edge[type="authorship"]',
-        style: { width: 1.5 },
+        style: { width: 1.5, 'line-color': '#7fae8e' },
       },
     ],
     layout: { name: 'preset' },
@@ -1303,6 +1305,28 @@
     if (!sidebar || !resizer) return;
     const SWEET = 260, SNAP = 30, MIN = 140, MAX = 520;
 
+    // While the width transition is animating (click-to-toggle path), an
+    // immediate cy.resize() would cache mid-transition container dimensions;
+    // wait for transitionend (with a timeout fallback) before resizing.
+    let deferredResize = null;
+    function resizeAfterTransition() {
+      if (deferredResize) deferredResize();
+      const finish = () => {
+        clearTimeout(timer);
+        sidebar.removeEventListener('transitionend', onEnd);
+        deferredResize = null;
+        cy.resize();
+      };
+      const onEnd = ev => { if (ev.target === sidebar && ev.propertyName === 'width') finish(); };
+      const timer = setTimeout(finish, 200);
+      deferredResize = () => {
+        clearTimeout(timer);
+        sidebar.removeEventListener('transitionend', onEnd);
+        deferredResize = null;
+      };
+      sidebar.addEventListener('transitionend', onEnd);
+    }
+
     function apply(w) {
       if (w === 'collapsed') {
         sidebar.style.width = '';   // inline width would override the class's width: 0
@@ -1311,7 +1335,8 @@
         sidebar.classList.remove('collapsed');
         sidebar.style.width = w + 'px';
       }
-      cy.resize();
+      if (sidebar.classList.contains('resizing')) cy.resize();
+      else resizeAfterTransition();
     }
 
     function save(w) {
@@ -1346,19 +1371,22 @@
       const onUp = () => {
         resizer.removeEventListener('pointermove', onMove);
         resizer.removeEventListener('pointerup', onUp);
+        resizer.removeEventListener('pointercancel', onUp);
         resizer.classList.remove('active');
         sidebar.classList.remove('resizing');
         if (!moved) {
           // Plain click: toggle collapsed <-> sweet spot
           current = sidebar.classList.contains('collapsed') ? SWEET : 'collapsed';
           apply(current);
+        } else {
+          cy.resize();
         }
         save(current);
-        cy.resize();
       };
 
       resizer.addEventListener('pointermove', onMove);
       resizer.addEventListener('pointerup', onUp);
+      resizer.addEventListener('pointercancel', onUp);
     });
   })();
 
