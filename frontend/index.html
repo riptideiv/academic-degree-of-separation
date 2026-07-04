@@ -16,74 +16,77 @@
 
 <body>
   <div id="sidebar">
-    <h2 class="sidebar-title">Researchers</h2>
+    <details class="side-card" id="sec-researchers" open>
+      <summary>Researchers</summary>
+      <div class="side-card-body">
+        <div id="search-wrapper">
+          <input type="text" id="search-input" placeholder="Add a researcher…" autocomplete="off">
+          <button class="smooth-button" id="search-btn" type="button">Search</button>
+        </div>
 
-    <div id="search-wrapper">
-      <input type="text" id="search-input" placeholder="Add a researcher…" autocomplete="off">
-      <button class="smooth-button" id="search-btn" type="button">Search</button>
-    </div>
+        <div id="work-search-wrapper">
+          <input type="text" id="work-search-input" placeholder="Add a work…" autocomplete="off">
+          <button class="smooth-button" id="work-search-btn" type="button">Search</button>
+        </div>
 
-    <div id="work-search-wrapper">
-      <input type="text" id="work-search-input" placeholder="Add a work…" autocomplete="off">
-      <button class="smooth-button" id="work-search-btn" type="button">Search</button>
-    </div>
+        <div id="origin-chips"></div>
 
-    <div id="origin-chips"></div>
+        <div id="degrees-panel" class="hidden">
+          <div class="section-label">Degrees of separation</div>
+          <ul id="degrees-list"></ul>
+        </div>
+      </div>
+    </details>
 
-    <div id="degrees-panel" class="hidden">
-      <div class="section-label">Degrees of separation</div>
-      <ul id="degrees-list"></ul>
-    </div>
+    <details class="side-card" id="sec-options" open>
+      <summary>Search options</summary>
+      <div class="side-card-body">
+        <div class="section-label">Edge types</div>
+        <div id="edge-toggles">
+          <label><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>
+          <label><input type="checkbox" id="edge-citation" checked> Citations</label>
+          <label><input type="checkbox" id="edge-institution" checked> Institution</label>
+        </div>
 
-    <br>
+        <div class="section-label">Work edge types</div>
+        <div id="work-edge-toggles">
+          <label><input type="checkbox" id="work-edge-authorship" checked> Authors of work</label>
+          <label><input type="checkbox" id="work-edge-citation" checked> Cited the work</label>
+        </div>
 
-    <h2 class="sidebar-title">Graph options</h2>
+        <div class="section-label">Neighborhood</div>
+        <select id="neighborhood">
+          <option value="0,1">Just the connection</option>
+          <option value="2,6" selected>Small</option>
+          <option value="2,12">Medium</option>
+          <option value="3,16">Large</option>
+        </select>
 
-    <div class="section-label">Edge types</div>
-    <div id="edge-toggles">
-      <label><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>
-      <label><input type="checkbox" id="edge-citation" checked> Citations</label>
-      <label><input type="checkbox" id="edge-institution" checked> Institution</label>
-    </div>
+        <button class="smooth-button" id="apply-options" type="button"
+          title="Re-run the search with the edge type and neighborhood settings above">Apply options</button>
+        <div class="apply-hint">Options above take effect when you apply; the search re-runs.</div>
+      </div>
+    </details>
 
-    <div class="section-label">Work edge types</div>
-    <div id="work-edge-toggles">
-      <label><input type="checkbox" id="work-edge-authorship" checked> Authors of work</label>
-      <label><input type="checkbox" id="work-edge-citation" checked> Cited the work</label>
-    </div>
+    <details class="side-card" id="sec-display">
+      <summary>Display</summary>
+      <div class="side-card-body">
+        <div class="section-label">Labels</div>
+        <div id="label-toggles">
+          <label><input type="checkbox" id="toggle-names"> Show all researcher names</label>
+        </div>
 
-    <div class="section-label">Neighborhood</div>
-    <select id="neighborhood">
-      <option value="0,1">Just the connection</option>
-      <option value="2,6" selected>Small</option>
-      <option value="2,12">Medium</option>
-      <option value="3,16">Large</option>
-    </select>
-
-    <hr
-      style="border: none; border-top: 1px solid #51565f6d; width: 90%; margin: auto; margin-top: 2px; margin-bottom: 2px;">
-
-    <div>
-      <button class="smooth-button" id="apply-options" type="button"
-        title="Re-run the search with the edge type and neighborhood settings above">Apply options</button>
-    </div>
-
-    <br>
-
-    <div class="section-label">Labels</div>
-    <div id="label-toggles">
-      <label><input type="checkbox" id="toggle-names"> Show all researcher names</label>
-    </div>
-
-    <div class="section-label">Layout</div>
-    <div id="layout-controls">
-      <label>Spacing
-        <input type="range" id="layout-spacing" min="1" max="10" step="1" value="5">
-      </label>
-      <label>Link length
-        <input type="range" id="layout-link" min="40" max="220" step="10" value="100">
-      </label>
-    </div>
+        <div class="section-label">Layout</div>
+        <div id="layout-controls">
+          <label>Spacing
+            <input type="range" id="layout-spacing" min="1" max="10" step="1" value="5">
+          </label>
+          <label>Link length
+            <input type="range" id="layout-link" min="40" max="220" step="10" value="100">
+          </label>
+        </div>
+      </div>
+    </details>
 
     <div id="node-detail" class="hidden">
       <h3 id="detail-name"></h3>
@@ -100,10 +103,29 @@
     </div>
   </div>
 
+  <div id="sidebar-resizer" title="Drag to resize · click to collapse/expand"></div>
+
   <div id="graph-area">
     <div id="progress-overlay" class="hidden">
       <span id="progress-text">Loading…</span>
     </div>
+    <div id="empty-state" class="hidden">
+      <h1>Researcher Degrees of Separation</h1>
+      <p>How many hops of co-authorship, citation, or shared institution separate any two researchers?
+        Search for two names and find out.</p>
+      <button id="empty-example" type="button">Try an example: Geoffrey Hinton ↔ Noam Chomsky</button>
+    </div>
+    <details id="graph-legend" class="hidden" open>
+      <summary class="legend-title">Legend</summary>
+      <div class="legend-row"><span class="legend-node" style="background:#f5821e"></span> Searched researcher</div>
+      <div class="legend-row"><span class="legend-node" style="background:#5badd9; width:9px; height:9px;"></span> On a shortest path</div>
+      <div class="legend-row"><span class="legend-node legend-diamond"></span> Work</div>
+      <div class="legend-row"><span class="legend-node" style="background:#9a9a9a"></span> Neighborhood · bigger &amp; darker = more works</div>
+      <div class="legend-row"><span class="legend-line legend-solid"></span> Co-authored</div>
+      <div class="legend-row"><span class="legend-line legend-dashed"></span> Citation · arrow points to the cited</div>
+      <div class="legend-row"><span class="legend-line legend-dotted"></span> Same institution</div>
+      <div class="legend-row"><span class="legend-line legend-solid legend-authorship"></span> Author of work</div>
+    </details>
     <div id="cy"></div>
   </div>
 
