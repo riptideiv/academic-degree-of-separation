@@ -25,6 +25,7 @@ class BigQueryBackend(GraphBackend):
     async def get_neighbors_batch(
         self, author_ids: list[str], cached_only: bool = False
     ) -> dict[str, list[Connection]]:
+        # `cached_only` is ignored: BigQuery bulk reads carry no OpenAlex-API cost.
         full_ids = [f"https://openalex.org/{aid}" for aid in author_ids]
 
         tasks = []
