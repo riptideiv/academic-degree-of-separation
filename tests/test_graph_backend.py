@@ -436,18 +436,33 @@ async def test_overlapping_batch_fetches_disjoint_ids_immediately():
 
 
 async def test_owner_failure_unblocks_waiters():
-    """If the owning batch's fetch raises, waiters resolve to [] instead of hanging."""
+    """If the owning batch's fetch raises, waiters retry the fetch themselves."""
     fetch_started = asyncio.Event()
     release = asyncio.Event()
 
-    class BoomStore(NeighborStore):
-        async def fetch(self, ids):
-            fetch_started.set()
-            await release.wait()
-            raise RuntimeError("store down")
+    class FlakyStore(NeighborStore):
+        def __init__(self):
+            self.calls = 0
 
+        async def fetch(self, ids):
+            self.calls += 1
+            if self.calls == 1:
+                fetch_started.set()
+                await release.wait()
+                raise RuntimeError("store down")
+            return {
+                i: [Connection(
+                    target_author_id="A2",
+                    target_name="Bob",
+                    connection_type="coauthor",
+                    label="Paper",
+                )]
+                for i in ids
+            }
+
+    store = FlakyStore()
     mock_client = AsyncMock()
-    backend = OpenAlexBackend(mock_client, neighbor_cache=NeighborCache(store=BoomStore()))
+    backend = OpenAlexBackend(mock_client, neighbor_cache=NeighborCache(store=store))
     first = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
     await fetch_started.wait()
     second = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
@@ -456,7 +471,10 @@ async def test_owner_failure_unblocks_waiters():
 
     with pytest.raises(RuntimeError):
         await first
-    assert await asyncio.wait_for(second, timeout=1) == {"A1": []}
+    result = await asyncio.wait_for(second, timeout=1)
+    assert [c.target_author_id for c in result["A1"]] == ["A2"]
+    assert store.calls == 2  # the waiter re-fetched after the owner failed
+    mock_client.get_works_by_authors.assert_not_called()
 
 
 async def test_cached_only_batch_never_hits_client():
