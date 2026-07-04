@@ -1388,6 +1388,50 @@
       resizer.addEventListener('pointerup', onUp);
       resizer.addEventListener('pointercancel', onUp);
     });
+
+    // Obvious fold/unfold control (visible on desktop; the mobile switcher takes
+    // over below the breakpoint). Toggles between collapsed and the sweet spot.
+    const menuBtn = document.getElementById('menu-toggle');
+    if (menuBtn) menuBtn.addEventListener('click', () => {
+      const w = sidebar.classList.contains('collapsed') ? SWEET : 'collapsed';
+      apply(w);
+      save(w);
+    });
+  })();
+
+  // ── Mobile view switcher (Graph / Menu) ─────────────────────────────────────
+  // Below the breakpoint the sidebar is a full-screen overlay driven by a
+  // body.mobile-menu-open class rather than the desktop collapse/width logic.
+  (function initMobileView() {
+    const mq = window.matchMedia('(max-width: 780px)');
+    const graphBtn = document.getElementById('view-graph');
+    const menuBtn = document.getElementById('view-menu');
+    if (!graphBtn || !menuBtn) return;
+
+    function setMenuOpen(open) {
+      document.body.classList.toggle('mobile-menu-open', open);
+      graphBtn.classList.toggle('active', !open);
+      menuBtn.classList.toggle('active', open);
+      // Let the overlay's transform transition finish before remeasuring the graph.
+      setTimeout(() => {
+        cy.resize();
+        if (!open && cy.nodes().length) cy.fit(undefined, 40);
+      }, 240);
+    }
+
+    graphBtn.addEventListener('click', () => setMenuOpen(false));
+    menuBtn.addEventListener('click', () => setMenuOpen(true));
+
+    function syncMode() {
+      if (mq.matches) {
+        setMenuOpen(false);   // entering mobile: show the graph first
+      } else {
+        document.body.classList.remove('mobile-menu-open');
+        cy.resize();
+      }
+    }
+    mq.addEventListener('change', syncMode);
+    syncMode();
   })();
 
   // ── Collapsible sidebar sections ───────────────────────────────────────────
