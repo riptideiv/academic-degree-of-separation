@@ -457,3 +457,22 @@ async def test_owner_failure_unblocks_waiters():
     with pytest.raises(RuntimeError):
         await first
     assert await asyncio.wait_for(second, timeout=1) == {"A1": []}
+
+
+async def test_cached_only_batch_never_hits_client():
+    mock_client = AsyncMock()
+    mock_client.get_works_by_authors.return_value = [
+        make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob")])
+    ]
+    mock_client.get_authors_batch.return_value = []
+
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
+    await backend.get_neighbors_batch(["A1"])  # populate the ring cache
+    mock_client.reset_mock()
+
+    result = await backend.get_neighbors_batch(["A1", "A9"], cached_only=True)
+
+    assert {c.target_author_id for c in result["A1"]} == {"A2"}
+    assert result["A9"] == []  # uncached id resolves empty — no fetch
+    mock_client.get_works_by_authors.assert_not_called()
+    mock_client.get_authors_batch.assert_not_called()
