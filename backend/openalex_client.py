@@ -36,7 +36,9 @@ class OpenAlexClient:
         # We still send a descriptive User-Agent / mailto as a courtesy identifier.
         # Configure via OPENALEX_MAILTO env var or a "mailto" entry in api-keys.json.
         self._mailto = os.environ.get("OPENALEX_MAILTO") or keys.get("mailto", "") or ""
-        self._semaphore = asyncio.Semaphore(5)
+        # 10 concurrent requests: the OpenAlex polite pool (mailto/api-key
+        # identified, which we send) allows ~10 req/s.
+        self._semaphore = asyncio.Semaphore(10)
         # One shared client → connection pooling / keep-alive across the many calls
         # a single BFS makes. Created lazily so it binds to the running event loop.
         self._http: httpx.AsyncClient | None = None
@@ -48,7 +50,7 @@ class OpenAlexClient:
     async def _http_client(self) -> httpx.AsyncClient:
         if self._http is None:
             self._http = httpx.AsyncClient(
-                timeout=30.0, headers={"User-Agent": self._user_agent()}
+                timeout=30.0, http2=True, headers={"User-Agent": self._user_agent()}
             )
         return self._http
 
