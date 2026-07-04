@@ -180,13 +180,16 @@ async def _collect_path(
                 n["works_count"] = a.get("works_count", 0)
                 n["cited_by_count"] = a.get("cited_by_count", 0)
 
-    for n in nodes:
-        if n["type"] != "work":
-            continue
-        w = to_obj if n["id"] == to_id else await _client.get_work(n["id"])
-        n["cited_by_count"] = w.get("cited_by_count", 0)
-        n["publication_year"] = w.get("publication_year")
-        n["name"] = w.get("title", n["name"])
+    async def _work_details(n: dict) -> dict:
+        return to_obj if n["id"] == to_id else await _client.get_work(n["id"])
+
+    work_nodes = [n for n in nodes if n["type"] == "work"]
+    if work_nodes:
+        details = await asyncio.gather(*[_work_details(n) for n in work_nodes])
+        for n, w in zip(work_nodes, details):
+            n["cited_by_count"] = w.get("cited_by_count", 0)
+            n["publication_year"] = w.get("publication_year")
+            n["name"] = w.get("title", n["name"])
 
     return {
         "nodes": nodes,
