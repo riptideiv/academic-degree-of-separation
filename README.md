@@ -25,7 +25,8 @@ uvicorn backend.app:app --reload --port 8000
 open http://127.0.0.1:8000        # macOS  (or just visit the URL)
 ```
 
-Type a researcher's name in the sidebar, click a result, then add a second one. The
+Type a researcher's name in the sidebar, click a result, then add a second one (or
+click the example query on the empty canvas to see it in action). The
 sidebar shows the **degrees of separation** and the full shortest path (names plus the
 paper or institution behind each hop), and the graph renders their neighborhoods.
 
@@ -82,13 +83,19 @@ tests/                pytest suite
    builds a ranked neighborhood around everyone. Each connected pair emits a `path`
    event carrying the hop count and the ordered steps.
 3. The **frontend** consumes the SSE stream, draws nodes/edges with Cytoscape, and
-   lists the degrees of separation + shortest paths in the sidebar. Sidebar controls:
-   **Edge types** choose which connection types the search uses (co-author / citation
+   lists the degrees of separation + shortest paths in the sidebar. Edge types share
+   one color and are distinguished by dash pattern (solid = co-authorship, dashed =
+   citation with the arrow pointing at the cited, short dash = shared institution;
+   work → author edges are green); a collapsible **legend** in the corner explains
+   the encoding. Sidebar controls (grouped into collapsible cards): **Edge types**
+   choose which connection types the search uses (co-author / citation
    / institution); **Neighborhood** sets how much surrounding network to draw (from
    "just the connection" up to a large neighborhood); **Show all names** reveals every
    node's label (otherwise only the researchers + connecting path are labeled, and
    the rest show their name on hover); **Layout** sliders (Spacing, Link length) tune
-   the force-directed layout live without re-running the search.
+   the force-directed layout live without re-running the search. The sidebar itself
+   can be dragged to resize (snapping to its default width) or collapsed entirely by
+   clicking the handle; widths and card states persist across reloads.
 
 After expanding each researcher's neighborhood, the backend also adds the real edges
 among the nodes that are already on screen, so the connecting/middle nodes link into
