@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.bfs import find_path
 from backend.graph_backend import ALL_EDGE_TYPES, ALL_WORK_EDGE_TYPES, OpenAlexBackend, _is_work_id
-from backend.models import AuthorResult, AuthorWork, PaginatedAuthors, PaginatedWorks
+from backend.models import AuthorWork, PaginatedAuthors, PaginatedWorks
 from backend.neighbor_store import (
     JsonNeighborStore,
     NeighborCache,
@@ -387,7 +387,7 @@ async def graph_expand(
                 event_type = event.get("type", "progress")
                 yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
-        yield f"event: done\ndata: {{}}\n\n"
+        yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(
         event_stream(),
