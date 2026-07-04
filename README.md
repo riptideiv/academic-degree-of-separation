@@ -30,7 +30,11 @@ click the example query on the empty canvas to see it in action). The
 sidebar shows the **degrees of separation** and the full shortest path (names plus the
 paper or institution behind each hop), and the graph renders their neighborhoods.
 
-No API key is required, but configuring your email is recommended (see below).
+You can try it with no configuration, but a **free** OpenAlex API key is
+recommended — OpenAlex retired the old "polite pool" in early 2025 and now gates
+throughput behind a key, raising your daily allowance from ~$0.10/day (keyless) to
+~$1/day. Grab one in about 30 seconds at
+[openalex.org/settings/api](https://openalex.org/settings/api) (see below).
 
 ## Configuration
 
@@ -39,15 +43,15 @@ root (git-ignored):
 
 | Env var | `api-keys.json` key | Purpose |
 |---|---|---|
-| `OPENALEX_MAILTO` | `mailto` | Your email. Puts requests in OpenAlex's faster ["polite pool"](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication#the-polite-pool). **Recommended.** |
-| `OPENALEX_KEY` | `openalex-key` | OpenAlex premium API key, if you have one. |
+| `OPENALEX_KEY` | `openalex-key` | Free (or premium) OpenAlex API key, sent as the `api_key` query param. As of early 2025 OpenAlex requires a key for anything beyond a tiny keyless allowance (~$0.10/day vs. ~$1/day with a free key). Get one at [openalex.org/settings/api](https://openalex.org/settings/api). **Recommended.** |
+| `OPENALEX_MAILTO` | `mailto` | Your email. Formerly opted requests into OpenAlex's "polite pool" — that pool was **retired** when API keys launched, so this no longer affects rate limits. Optional; still sent as a courtesy identifier in the User-Agent. |
 | `BACKEND` | (n/a) | `openalex` (default) or `bigquery`. |
 | `GOOGLE_CLOUD_PROJECT` | `gcp-project` | GCP project for the optional BigQuery backend. |
 
 Example `api-keys.json`:
 
 ```json
-{ "mailto": "you@example.com" }
+{ "openalex-key": "YOUR_OPENALEX_KEY" }
 ```
 
 ## Running the tests
@@ -94,8 +98,11 @@ tests/                pytest suite
    node's label (otherwise only the researchers + connecting path are labeled, and
    the rest show their name on hover); **Layout** sliders (Spacing, Link length) tune
    the force-directed layout live without re-running the search. The sidebar itself
-   can be dragged to resize (snapping to its default width) or collapsed entirely by
-   clicking the handle; widths and card states persist across reloads.
+   can be dragged to resize (snapping to its default width), collapsed entirely by
+   clicking the handle, or folded to the left with the **☰ menu button**; widths and
+   card states persist across reloads. On narrow screens (phones) the sidebar becomes a
+   full-screen overlay and a segmented **Graph / Menu** switcher at the top toggles
+   between the graph and the controls.
 
 After expanding each researcher's neighborhood, the backend also adds the real edges
 among the nodes that are already on screen, so the connecting/middle nodes link into
