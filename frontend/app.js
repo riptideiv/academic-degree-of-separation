@@ -1049,8 +1049,10 @@
         rescaleExpansionNodes();
         applyNameVisibility();
         applyEdgeFade();
-        // Final settle: relax + frame the already-grown graph without a re-shuffle.
-        runLayoutIncremental({ fit: true });
+        // Full-quality settle: one visible reorganization that untangles
+        // whatever arrangement the streaming order produced (origins stay
+        // pinned via fixedNodeConstraint inside runLayout).
+        runLayout();
         finish();
       });
 
