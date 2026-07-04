@@ -71,7 +71,8 @@ backend/
   bfs.py              Bidirectional BFS path-finder
   graph_backend.py    OpenAlex graph backend (co-author / citation / institution edges)
   graph_expand.py     Neighborhood expansion (ranked BFS) for the visualization
-  openalex_client.py  Thin async OpenAlex HTTP client (shared, pooled)
+  openalex_client.py  Thin async OpenAlex HTTP client (shared, pooled, HTTP/2)
+  neighbor_store.py   Neighbor-ring cache: bounded LRU + durable store (JSON/Supabase)
   bigquery_backend.py Optional BigQuery backend (same interface)
   models.py           Pydantic models
 frontend/
@@ -106,7 +107,9 @@ tests/                pytest suite
 
 After expanding each researcher's neighborhood, the backend also adds the real edges
 among the nodes that are already on screen, so the connecting/middle nodes link into
-the network instead of forming isolated chains between the two hubs.
+the network instead of forming isolated chains between the two hubs. This stitch pass
+reads only the neighbor cache (no extra OpenAlex calls), so edges between nodes whose
+rings were never fetched are simply not drawn.
 
 ## Deployment
 

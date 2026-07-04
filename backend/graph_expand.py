@@ -37,9 +37,10 @@ async def expand_graph(
     budget, so each middle node gains a little neighborhood of its own instead of
     sitting as an isolated chain link.
 
-    After expansion, a stitch pass adds the real edges among all visible nodes (no new
-    nodes). Together with the bridge expansion this keeps the middle nodes connected
-    and lets the neighborhoods interconnect.
+    After expansion, a cache-only stitch pass adds the already-cached real edges among
+    the visible nodes (no new nodes, no fresh OpenAlex calls). Together with the bridge
+    expansion this keeps the middle nodes connected and lets the neighborhoods
+    interconnect.
 
     Yields:
       {"type": "progress", "message": str}

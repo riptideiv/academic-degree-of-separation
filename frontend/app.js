@@ -862,10 +862,11 @@
   }
 
   // Pick a starting position for a freshly-streamed node so it appears next to
-  // its parent instead of piling at (0,0). Expansion nodes ring their owner
-  // origin (further out with depth); path nodes sit at their pair's midpoint;
-  // everything else falls back to the origin centroid. A jitter breaks up
-  // overlap and gives fCoSE a good starting point to relax from.
+  // its parent instead of piling at (0,0). Expansion nodes spawn near an
+  // already-placed node they connect to (seedHints), falling back to a ring
+  // around their owner origin (further out with depth); path nodes sit at their
+  // pair's midpoint; everything else falls back to the origin centroid. A jitter
+  // breaks up overlap and gives fCoSE a good starting point to relax from.
   function seedPosition(nodeData, seedHints) {
     const jitter = r => (Math.random() - 0.5) * 2 * r;
     const near = (p, r) => ({ x: p.x + jitter(r), y: p.y + jitter(r) });
@@ -937,8 +938,8 @@
       }
       return;
     }
-    // Seed a starting position near the node's parent so it appears in a sensible
-    // spot immediately (origins are placed/pinned by the layout, so skip them).
+    // Seed a starting position near a connected or owner node so it appears in a
+    // sensible spot immediately (origins are placed/pinned by the layout, so skip them).
     const el = { group: 'nodes', data: { ...nodeData } };
     if (nodeData.type !== 'origin') el.position = seedPosition(nodeData, seedHints);
     cy.add(el);
@@ -1148,12 +1149,13 @@
     });
   }
 
-  // Incremental (non-destructive) layout used while the stream is arriving and
-  // for the final settle: keeps every node's current position (randomize:false)
-  // and only relaxes the newly-seeded nodes outward, so the graph visibly grows
-  // instead of re-shuffling. Cheaper than runLayout (fewer iterations, shorter
-  // animation). `fit` re-frames the viewport so the full graph always stays
-  // comfortably centered as it grows (generous padding); on by default.
+  // Incremental (non-destructive) layout used while the stream is arriving:
+  // keeps every node's current position (randomize:false) and only relaxes the
+  // newly-seeded nodes outward, so the graph visibly grows instead of
+  // re-shuffling. Cheaper than runLayout (fewer iterations, shorter animation),
+  // which does the one full-quality settle once the stream ends. `fit` re-frames
+  // the viewport so the full graph always stays comfortably centered as it grows
+  // (generous padding); on by default.
   function runLayoutIncremental({ fit = true } = {}) {
     if (!cy.nodes().length) return;
     if (!(window.cytoscapeFcose && cytoscape.__fcoseRegistered)) return;
