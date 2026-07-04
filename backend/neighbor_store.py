@@ -28,7 +28,7 @@ from backend.models import Connection
 
 log = logging.getLogger(__name__)
 
-# How often the Supabase background task flushes pending entries.
+# How often the background flush tasks (JSON / Supabase) persist pending entries.
 FLUSH_INTERVAL_S = 5.0
 
 
