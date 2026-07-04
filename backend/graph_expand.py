@@ -17,6 +17,42 @@ def _edge_key(a: str, b: str, etype: str) -> tuple:
     return (a, b, etype) if a <= b else (b, a, etype)
 
 
+async def stitch_edges(
+    backend: GraphBackend,
+    node_ids: set[str],
+    emitted: set[tuple] | None = None,
+) -> list[dict]:
+    """Real edges among the visible nodes (no new nodes), from cached rings only.
+
+    `emitted` (canonical edge keys) suppresses edges already sent; the returned
+    edges' keys are added to it. Cache-only: stitch edges are cosmetic periphery,
+    not worth fresh OpenAlex calls for never-expanded leaf rings (leaf-to-leaf
+    edges whose rings were never cached are simply not drawn).
+    """
+    if not node_ids:
+        return []
+    emitted = emitted if emitted is not None else set()
+    neighbor_map = await backend.get_neighbors_batch(list(node_ids), cached_only=True)
+    stitch = []
+    for src, conns in neighbor_map.items():
+        for conn in conns:
+            tgt = conn.target_author_id
+            if tgt == src or tgt not in node_ids:
+                continue
+            k = _edge_key(src, tgt, conn.connection_type)
+            if k in emitted:
+                continue
+            emitted.add(k)
+            stitch.append({
+                "source": src,
+                "target": tgt,
+                "type": conn.connection_type,
+                "label": conn.label,
+                "direction": conn.direction,
+            })
+    return stitch
+
+
 async def expand_graph(
     backend: GraphBackend,
     client: OpenAlexClient,
@@ -25,6 +61,7 @@ async def expand_graph(
     top_k: int = 10,
     bridge_ids: list[str] | None = None,
     bridge_top_k: int | None = None,
+    do_stitch: bool = True,
 ) -> AsyncIterator[dict]:
     """
     Balanced BFS expansion around each root (a researcher of interest).
@@ -163,27 +200,9 @@ async def expand_graph(
     # Stitch pass: add the real edges among the visible nodes (no new nodes). This
     # links the connecting/middle nodes into the graph and interconnects the
     # neighborhoods, instead of leaving thin chains between two bushy hubs.
-    if graph_nodes:
-        # Cache-only: stitch edges are cosmetic periphery, not worth a fresh
-        # round of OpenAlex calls for never-expanded leaf rings (leaf-to-leaf
-        # edges whose rings were never cached are simply not drawn).
-        neighbor_map = await backend.get_neighbors_batch(list(graph_nodes), cached_only=True)
-        stitch = []
-        for src, conns in neighbor_map.items():
-            for conn in conns:
-                tgt = conn.target_author_id
-                if tgt == src or tgt not in graph_nodes:
-                    continue
-                k = _edge_key(src, tgt, conn.connection_type)
-                if k in emitted:
-                    continue
-                emitted.add(k)
-                stitch.append({
-                    "source": src,
-                    "target": tgt,
-                    "type": conn.connection_type,
-                    "label": conn.label,
-                    "direction": conn.direction,
-                })
+    # Callers that expand in phases (see app.py's overlap flow) pass
+    # do_stitch=False and run one stitch_edges() over the union at the end.
+    if do_stitch and graph_nodes:
+        stitch = await stitch_edges(backend, graph_nodes, emitted)
         if stitch:
             yield {"type": "expansion", "depth": max_depth, "nodes": [], "edges": stitch}

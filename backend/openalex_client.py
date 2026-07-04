@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from collections import OrderedDict
 from pathlib import Path
 
 import httpx
@@ -42,6 +43,11 @@ class OpenAlexClient:
         # One shared client → connection pooling / keep-alive across the many calls
         # a single BFS makes. Created lazily so it binds to the running event loop.
         self._http: httpx.AsyncClient | None = None
+        # Author-metadata LRU (id → author record). Expansion ranking re-fetches
+        # the same author records every level/run; process-lifetime caching is
+        # fine because citation counts drift slowly.
+        self._author_cache: "OrderedDict[str, dict]" = OrderedDict()
+        self._author_cache_max = 50_000
 
     def _user_agent(self) -> str:
         ua = "researcher-degree-of-separation/1.0"
@@ -221,10 +227,27 @@ class OpenAlexClient:
         return combined
 
     async def get_authors_batch(self, author_ids: list[str]) -> list[dict]:
-        """Fetch multiple author records by ID; chunks large lists."""
+        """Fetch multiple author records by ID; chunks large lists.
+
+        Records are served from a bounded in-process LRU when possible — the
+        expansion ranking asks for the same authors level after level and run
+        after run, so this saves a full API round per level on warm paths.
+        """
         if not author_ids:
             return []
-        chunk_list = list(_chunks(author_ids, _FILTER_CHUNK))
+        combined: list[dict] = []
+        missing: list[str] = []
+        for aid in dict.fromkeys(author_ids):
+            hit = self._author_cache.get(aid)
+            if hit is not None:
+                self._author_cache.move_to_end(aid)
+                combined.append(hit)
+            else:
+                missing.append(aid)
+        if not missing:
+            return combined
+
+        chunk_list = list(_chunks(missing, _FILTER_CHUNK))
         results = await asyncio.gather(*[
             self._get(f"{API_BASE}/authors", {
                 "filter": f"ids.openalex:{'|'.join(chunk)}",
@@ -233,10 +256,15 @@ class OpenAlexClient:
             })
             for chunk in chunk_list
         ], return_exceptions=True)
-        combined: list[dict] = []
         for r in results:
-            if not isinstance(r, Exception):
-                combined.extend(r.get("results", []))
+            if isinstance(r, Exception):
+                continue
+            for author in r.get("results", []):
+                self._author_cache[_short_id(author["id"])] = author
+                self._author_cache.move_to_end(_short_id(author["id"]))
+                combined.append(author)
+        while len(self._author_cache) > self._author_cache_max:
+            self._author_cache.popitem(last=False)
         return combined
 
     async def get_institution_authors_batch(self, institution_ids: list[str], limit: int = 50) -> list[dict]:

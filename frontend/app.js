@@ -400,7 +400,7 @@
     // Rebuild if graph-affecting settings changed
     const graphChanged = [
       'edgeCoauthor', 'edgeCitation', 'edgeInstitution',
-      'workEdgeAuthorship', 'workEdgeCitation', 'neighborhood',
+      'workEdgeAuthorship', 'workEdgeCitation', 'neighborhood', 'fastSearch',
     ].some(k => String(prev[k]) !== String(saved.settings[k]));
     if (graphChanged && state.origins.size) scheduleRebuild();
     else if (state.origins.size) runLayout();
@@ -676,6 +676,7 @@
     workEdgeAuthorship: true,
     workEdgeCitation: true,
     neighborhood: '2,6',
+    fastSearch: false,
     showNames: false,
     layoutSpacing: '5',
     layoutLink: '100',
@@ -689,6 +690,7 @@
       workEdgeAuthorship: document.getElementById('work-edge-authorship')?.checked ?? DEFAULT_SETTINGS.workEdgeAuthorship,
       workEdgeCitation: document.getElementById('work-edge-citation')?.checked ?? DEFAULT_SETTINGS.workEdgeCitation,
       neighborhood: document.getElementById('neighborhood')?.value ?? DEFAULT_SETTINGS.neighborhood,
+      fastSearch: document.getElementById('fast-search')?.checked ?? DEFAULT_SETTINGS.fastSearch,
       showNames: document.getElementById('toggle-names')?.checked ?? DEFAULT_SETTINGS.showNames,
       layoutSpacing: document.getElementById('layout-spacing')?.value ?? DEFAULT_SETTINGS.layoutSpacing,
       layoutLink: document.getElementById('layout-link')?.value ?? DEFAULT_SETTINGS.layoutLink,
@@ -704,6 +706,7 @@
     if (el('work-edge-authorship')) el('work-edge-authorship').checked = s.workEdgeAuthorship ?? DEFAULT_SETTINGS.workEdgeAuthorship;
     if (el('work-edge-citation')) el('work-edge-citation').checked = s.workEdgeCitation ?? DEFAULT_SETTINGS.workEdgeCitation;
     if (el('neighborhood')) el('neighborhood').value = s.neighborhood ?? DEFAULT_SETTINGS.neighborhood;
+    if (el('fast-search')) el('fast-search').checked = s.fastSearch ?? DEFAULT_SETTINGS.fastSearch;
     if (el('toggle-names')) el('toggle-names').checked = s.showNames ?? DEFAULT_SETTINGS.showNames;
     if (el('layout-spacing')) el('layout-spacing').value = s.layoutSpacing ?? DEFAULT_SETTINGS.layoutSpacing;
     if (el('layout-link')) el('layout-link').value = s.layoutLink ?? DEFAULT_SETTINGS.layoutLink;
@@ -969,7 +972,7 @@
     state.isLoading = loading;
     // Graph-affecting controls
     ['edge-coauthor', 'edge-citation', 'edge-institution', 'work-edge-authorship',
-      'work-edge-citation', 'neighborhood', 'apply-options',
+      'work-edge-citation', 'neighborhood', 'fast-search', 'apply-options',
       'restore-settings', 'restore-default-layout', 'clear-canvas'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = loading;
@@ -1006,6 +1009,7 @@
       const nb = getNeighborhood();
       params.set('depth', nb.depth);
       params.set('top_k', nb.topK);
+      if (document.getElementById('fast-search')?.checked) params.set('fast', '1');
 
       const source = new EventSource(`${API_BASE}/api/graph/expand?${params}`);
       state.activeSource = source;

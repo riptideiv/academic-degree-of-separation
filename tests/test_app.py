@@ -86,7 +86,8 @@ async def test_graph_expand_emits_work_node_for_work_origin():
 
     with patch("backend.app._client") as mock_client, \
          patch("backend.app.OpenAlexBackend"), \
-         patch("backend.graph_expand.expand_graph", mock_expand_graph):
+         patch("backend.graph_expand.expand_graph", mock_expand_graph), \
+         patch("backend.graph_expand.stitch_edges", AsyncMock(return_value=[])):
         mock_client.get_work = AsyncMock(return_value={
             "title": "Some Paper", "cited_by_count": 42, "publication_year": 2019,
         })
@@ -131,7 +132,8 @@ async def test_collect_path_to_work_endpoint():
     with patch("backend.app._client") as mock_client, \
          patch("backend.app.find_path", mock_find_path), \
          patch("backend.app.OpenAlexBackend"), \
-         patch("backend.graph_expand.expand_graph", mock_expand_graph):
+         patch("backend.graph_expand.expand_graph", mock_expand_graph), \
+         patch("backend.graph_expand.stitch_edges", AsyncMock(return_value=[])):
         mock_client.get_author = AsyncMock(return_value={
             "display_name": "Alice", "works_count": 5, "cited_by_count": 10,
             "last_known_institutions": [],
@@ -254,7 +256,8 @@ async def test_graph_expand_emits_path_event():
     with patch("backend.app._client") as mock_client, \
          patch("backend.app.find_path", mock_find_path), \
          patch("backend.app.OpenAlexBackend"), \
-         patch("backend.graph_expand.expand_graph", mock_expand_graph):
+         patch("backend.graph_expand.expand_graph", mock_expand_graph), \
+         patch("backend.graph_expand.stitch_edges", AsyncMock(return_value=[])):
         mock_client.get_author = AsyncMock(side_effect=lambda aid: {
             "display_name": {"A1": "Alice", "A2": "Bob"}.get(aid, aid)
         })
@@ -308,3 +311,44 @@ async def test_path_sse_yields_app_error_on_exception():
             if "message" in data:
                 assert "API down" in data["message"]
                 break
+
+
+async def test_path_fast_param_sets_frontier_cap():
+    captured = {}
+
+    async def mock_find_path(*args, **kwargs):
+        captured.update(kwargs)
+        yield {"type": "result", "found": False, "reason": "No path found"}
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app.OpenAlexBackend"):
+        mock_client.get_author = AsyncMock(return_value={"display_name": "Alice"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", "/api/path?from=A1&to=A2&fast=1") as resp:
+                assert resp.status_code == 200
+                async for _ in resp.aiter_text():
+                    pass
+
+    from backend.bfs import FAST_FRONTIER_CAP
+    assert captured["frontier_cap"] == FAST_FRONTIER_CAP
+
+
+async def test_path_defaults_to_exact_search():
+    captured = {}
+
+    async def mock_find_path(*args, **kwargs):
+        captured.update(kwargs)
+        yield {"type": "result", "found": False, "reason": "No path found"}
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app.OpenAlexBackend"):
+        mock_client.get_author = AsyncMock(return_value={"display_name": "Alice"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", "/api/path?from=A1&to=A2") as resp:
+                assert resp.status_code == 200
+                async for _ in resp.aiter_text():
+                    pass
+
+    assert captured["frontier_cap"] is None

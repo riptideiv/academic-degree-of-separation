@@ -3,6 +3,11 @@ from typing import AsyncIterator
 from backend.graph_backend import GraphBackend
 from backend.models import Connection
 
+# Fast mode: expand only this many candidates per BFS level (ranked by how many
+# frontier nodes connect to them). Heuristic — the found path can occasionally
+# be one hop longer than the true shortest, or missed for very obscure pairs.
+FAST_FRONTIER_CAP = 200
+
 
 async def find_path(
     backend: GraphBackend,
@@ -11,6 +16,7 @@ async def find_path(
     target_id: str,
     target_name: str,
     max_depth: int = 6,
+    frontier_cap: int | None = None,
 ) -> AsyncIterator[dict]:
     if source_id == target_id:
         yield {
@@ -66,6 +72,7 @@ async def find_path(
 
         new_frontier: set[str] = set()
         meetings: list[str] = []  # all meeting candidates found in this level
+        freq: dict[str, int] = {}  # frontier connections per candidate (fast-mode rank)
 
         for node_id in frontier:
             for conn in neighbor_map.get(node_id, []):
@@ -84,6 +91,9 @@ async def find_path(
                     visited[nid] = (node_id, conn)
                     current_depth_map[nid] = current_depth + 1
                     new_frontier.add(nid)
+                    freq[nid] = 1
+                elif nid in new_frontier:
+                    freq[nid] += 1
 
         if meetings:
             # Pick the candidate with the minimum combined forward + backward depth
@@ -94,6 +104,20 @@ async def find_path(
             path = _reconstruct_path(best_meeting, forward_parents, backward_parents, names)
             yield {"type": "result", "found": True, "path": path, "hops": len(path) - 1}
             return
+
+        # Fast mode: keep only the best-connected candidates. Pruned nodes stay
+        # in `visited` (their parent link is still valid if the other side meets
+        # them); they just never get expanded from this side.
+        if frontier_cap is not None and len(new_frontier) > frontier_cap:
+            ranked = sorted(new_frontier, key=lambda n: freq[n], reverse=True)
+            new_frontier = set(ranked[:frontier_cap])
+            yield {
+                "type": "progress",
+                "message": (
+                    f"Fast mode: narrowing {len(ranked)} candidates "
+                    f"to the {frontier_cap} best-connected"
+                ),
+            }
 
         yield {
             "type": "progress",

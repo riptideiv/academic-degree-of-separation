@@ -158,3 +158,74 @@ async def test_bfs_tolerates_neighbor_fetch_exception():
     # Should not crash; either found=False or found=True (depending on graph)
     assert result["type"] == "result"
     assert "found" in result
+
+
+# --- fast mode (frontier_cap) ---
+
+class RecordingBackend(MockBackend):
+    """MockBackend that also records every batch call's id list."""
+
+    def __init__(self, graph):
+        super().__init__(graph)
+        self.batch_calls: list[list[str]] = []
+
+    async def get_neighbors_batch(self, author_ids, cached_only=False):
+        self.batch_calls.append(sorted(author_ids))
+        return {i: self._graph.get(i, []) for i in author_ids}
+
+
+def _hub_graph():
+    """S fans out to 30 authors, T to 20; both fan-outs funnel into C."""
+    graph = {
+        "S": [edge(f"a{i}", f"A{i}") for i in range(30)],
+        "T": [edge(f"b{i}", f"B{i}") for i in range(20)],
+        "C": [edge(f"a{i}", f"A{i}") for i in range(30)]
+           + [edge(f"b{i}", f"B{i}") for i in range(20)],
+    }
+    for i in range(30):
+        graph[f"a{i}"] = [edge("C", "Common")]
+    for i in range(20):
+        graph[f"b{i}"] = [edge("C", "Common")]
+    return graph
+
+
+async def test_uncapped_search_expands_full_frontier():
+    backend = RecordingBackend(_hub_graph())
+    events = await collect(find_path(backend, "S", "Source", "T", "Target"))
+    result = events[-1]
+    assert result["found"] is True
+    assert result["hops"] == 4  # S - a? - C - b? - T
+    # The bidirectional search expands the smaller (backward) fan-out whole.
+    assert max(len(c) for c in backend.batch_calls) == 20
+
+
+async def test_frontier_cap_bounds_every_level():
+    backend = RecordingBackend(_hub_graph())
+    events = await collect(
+        find_path(backend, "S", "Source", "T", "Target", frontier_cap=5)
+    )
+    result = events[-1]
+    assert result["found"] is True
+    assert result["hops"] == 4  # pruning is harmless: every a/b funnels into C
+    assert max(len(c) for c in backend.batch_calls) == 5
+
+
+async def test_frontier_cap_keeps_best_connected():
+    # HUB is reachable from both frontier parents (freq 2); the leaves are
+    # freq 1. With cap=2 the beam must keep HUB, and only HUB leads onward.
+    graph = {
+        "S": [edge("p1", "P1"), edge("p2", "P2")],
+        "p1": [edge("HUB", "Hub"), edge("l1", "L1"), edge("l2", "L2")],
+        "p2": [edge("HUB", "Hub"), edge("l3", "L3"), edge("l4", "L4")],
+        "HUB": [edge("c1", "C1")],
+        "T": [edge(f"c{i}", f"C{i}") for i in range(1, 10)],
+    }
+    backend = RecordingBackend(graph)
+    events = await collect(
+        find_path(backend, "S", "Source", "T", "Target", frontier_cap=2)
+    )
+    result = events[-1]
+    assert result["found"] is True
+    assert result["hops"] == 4  # S - p? - HUB - c1 - T survives the beam
+    path_ids = [s["author_id"] for s in result["path"]]
+    assert "HUB" in path_ids
