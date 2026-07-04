@@ -31,9 +31,10 @@ class OpenAlexClient:
             except (json.JSONDecodeError, OSError):
                 keys = {}
         self._api_key = os.environ.get("OPENALEX_KEY") or keys.get("openalex-key", "") or ""
-        # OpenAlex routes requests that identify themselves (mailto / descriptive
-        # User-Agent) into a faster "polite pool" with more headroom. Configure via
-        # OPENALEX_MAILTO env var or a "mailto" entry in api-keys.json.
+        # OpenAlex retired the "polite pool" in early 2025; mailto no longer affects
+        # rate limits (higher limits now come from OPENALEX_KEY / the api_key param).
+        # We still send a descriptive User-Agent / mailto as a courtesy identifier.
+        # Configure via OPENALEX_MAILTO env var or a "mailto" entry in api-keys.json.
         self._mailto = os.environ.get("OPENALEX_MAILTO") or keys.get("mailto", "") or ""
         self._semaphore = asyncio.Semaphore(5)
         # One shared client → connection pooling / keep-alive across the many calls

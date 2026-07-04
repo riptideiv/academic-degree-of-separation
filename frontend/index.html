@@ -106,6 +106,7 @@
   <div id="sidebar-resizer" title="Drag to resize · click to collapse/expand"></div>
 
   <div id="graph-area">
+    <button id="menu-toggle" type="button" aria-label="Toggle menu">☰</button>
     <div id="progress-overlay" class="hidden">
       <span id="progress-text">Loading…</span>
     </div>
@@ -139,6 +140,11 @@
       <ul id="search-results-list"></ul>
       <div id="search-pagination"></div>
     </div>
+  </div>
+
+  <div id="view-switcher">
+    <button id="view-graph" type="button" class="active">Graph</button>
+    <button id="view-menu" type="button">Menu</button>
   </div>
 
   <script src="app.js"></script>
