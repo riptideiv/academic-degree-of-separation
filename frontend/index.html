@@ -62,6 +62,11 @@
           <option value="3,16">Large</option>
         </select>
 
+        <div class="section-label">Search speed</div>
+        <label title="Explores only the best-connected candidates at each search step. Much faster for distant pairs; the path found can occasionally be one hop longer than the true shortest.">
+          <input type="checkbox" id="fast-search"> Fast search (approximate)
+        </label>
+
         <button class="smooth-button" id="apply-options" type="button"
           title="Re-run the search with the edge type and neighborhood settings above">Apply options</button>
         <div class="apply-hint">Options above take effect when you apply; the search re-runs.</div>

@@ -315,3 +315,45 @@ async def test_get_authors_batch_chunks_large_list(api_key_file):
     authors = await client.get_authors_batch(author_ids)
     assert call_count == 2
     assert len(authors) == 2
+
+
+@respx.mock
+async def test_get_authors_batch_caches_records(api_key_file):
+    route = respx.get("https://api.openalex.org/authors").mock(
+        return_value=httpx.Response(200, json={
+            "results": [{
+                "id": "https://openalex.org/A1", "display_name": "Alice",
+                "last_known_institutions": [], "cited_by_count": 5, "works_count": 2,
+            }]
+        })
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+    first = await client.get_authors_batch(["A1"])
+    second = await client.get_authors_batch(["A1"])
+    assert route.call_count == 1  # second call is served from the LRU
+    assert first[0]["display_name"] == "Alice"
+    assert second == first
+
+
+@respx.mock
+async def test_get_authors_batch_fetches_only_uncached_ids(api_key_file):
+    def handler(request):
+        params = dict(httpx.QueryParams(request.url.query))
+        ids = params["filter"].split(":", 1)[1].split("|")
+        return httpx.Response(200, json={
+            "results": [
+                {"id": f"https://openalex.org/{i}", "display_name": i,
+                 "last_known_institutions": []}
+                for i in ids
+            ]
+        })
+
+    route = respx.get("https://api.openalex.org/authors").mock(side_effect=handler)
+    client = OpenAlexClient(api_key_path=api_key_file)
+    await client.get_authors_batch(["A1"])
+    result = await client.get_authors_batch(["A1", "A2"])
+
+    assert route.call_count == 2
+    last_params = dict(httpx.QueryParams(route.calls.last.request.url.query))
+    assert last_params["filter"] == "ids.openalex:A2"  # A1 came from the LRU
+    assert {a["display_name"] for a in result} == {"A1", "A2"}

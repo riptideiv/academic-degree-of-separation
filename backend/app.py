@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.bfs import find_path
+from backend.bfs import FAST_FRONTIER_CAP, find_path
 from backend.graph_backend import ALL_EDGE_TYPES, ALL_WORK_EDGE_TYPES, OpenAlexBackend, _is_work_id
 from backend.models import AuthorWork, PaginatedAuthors, PaginatedWorks
 from backend.neighbor_store import (
@@ -106,12 +106,14 @@ async def _collect_path(
     from_id: str,
     from_name: str,
     to_id: str,
+    frontier_cap: int | None = None,
 ) -> dict:
     """Run bidirectional BFS; return the found path's nodes/edges plus hop count.
 
     The returned dict carries the graph elements as well as the degree-of-separation
     metadata (found, hops, and both endpoint names) so the caller can emit a `path`
-    SSE event without re-deriving any of it.
+    SSE event without re-deriving any of it. `frontier_cap` bounds each BFS level
+    (fast mode).
     """
     if _is_work_id(to_id):
         to_obj = await _client.get_work(to_id)
@@ -126,7 +128,8 @@ async def _collect_path(
     found = False
     hops: int | None = None
 
-    async for event in find_path(backend, from_id, from_name, to_id, to_name):
+    async for event in find_path(backend, from_id, from_name, to_id, to_name,
+                                 frontier_cap=frontier_cap):
         if event.get("type") == "result" and event.get("found"):
             found = True
             hops = event.get("hops")
@@ -264,8 +267,10 @@ async def get_path(
     from_id: str = Query(..., alias="from"),
     to_id: str = Query(..., alias="to"),
     edges: list[str] = Query(default=list(ALL_EDGE_TYPES)),
+    fast: bool = Query(default=False),
 ):
     edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
+    frontier_cap = FAST_FRONTIER_CAP if fast else None
 
     async def event_stream():
         try:
@@ -279,7 +284,8 @@ async def get_path(
 
         backend = _make_backend(edge_types)
         try:
-            async for event in find_path(backend, from_id, from_name, to_id, to_name):
+            async for event in find_path(backend, from_id, from_name, to_id, to_name,
+                                         frontier_cap=frontier_cap):
                 event_type = event.get("type", "progress")
                 yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
         except Exception as exc:
@@ -301,9 +307,11 @@ async def graph_expand(
     work_edges: list[str] = Query(default=list(ALL_WORK_EDGE_TYPES)),
     depth: int = Query(default=2, ge=0, le=4),   # neighborhood expansion depth (0 = path only)
     top_k: int = Query(default=8, ge=1, le=25),  # neighbors kept per expansion level
+    fast: bool = Query(default=False),           # beam-limit the path BFS (approximate)
 ):
-    from backend.graph_expand import expand_graph
+    from backend.graph_expand import expand_graph, stitch_edges
 
+    frontier_cap = FAST_FRONTIER_CAP if fast else None
     edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
     work_edge_types = {e for e in work_edges if e in ALL_WORK_EDGE_TYPES} or ALL_WORK_EDGE_TYPES
     existing_origins = [x.strip() for x in origin_ids.split(",") if x.strip()]
@@ -344,48 +352,86 @@ async def graph_expand(
 
         backend = _make_backend(edge_types, work_edge_types)
         new_path_node_ids: list[str] = []
+        visible_ids: set[str] = {new_id} | set(existing_origins) | set(existing_path_ids)
+        all_origins = [new_id] + existing_origins
 
-        # Find paths from new researcher to all existing origins in parallel
+        # Overlap the two expensive phases: the path BFS runs as a background
+        # gather while the origin expansion streams, so the user watches the
+        # graph grow during the search instead of staring at a progress line.
+        # Both phases share the ring cache, so no work is duplicated.
+        path_task = None
         if existing_origins:
             yield f"event: progress\ndata: {json.dumps({'message': f'Finding connections to {len(existing_origins)} existing researcher(s)…'})}\n\n"
-
-            path_results = await asyncio.gather(*[
-                _collect_path(backend, new_id, new_name, oid)
+            path_task = asyncio.gather(*[
+                _collect_path(backend, new_id, new_name, oid, frontier_cap=frontier_cap)
                 for oid in existing_origins
             ], return_exceptions=True)
 
-            for result in path_results:
-                if isinstance(result, Exception):
-                    log.warning("Path finding failed: %s", result)
-                    continue
-                pair_key = "||".join(sorted([result["from_id"], result["to_id"]]))
-                for n in result["nodes"]:
-                    if n["type"] == "path":
-                        n = {**n, "path_pair": pair_key}
-                        new_path_node_ids.append(n["id"])
-                    yield f"event: node\ndata: {json.dumps(n)}\n\n"
-                for e in result["edges"]:
-                    yield f"event: edge\ndata: {json.dumps(e)}\n\n"
-                path_event = {
-                    k: result[k]
-                    for k in ("from_id", "from_name", "to_id", "to_name", "hops", "found", "steps")
-                }
-                yield f"event: path\ndata: {json.dumps(path_event)}\n\n"
+        try:
+            # Phase 1: expand the origins (existing path nodes get their small
+            # bridge budget here since they're known upfront). Stitching waits
+            # until every phase's nodes are on the canvas.
+            if depth > 0:
+                yield f"event: progress\ndata: {json.dumps({'message': 'Building neighborhood graph…'})}\n\n"
+                async for event in expand_graph(
+                    backend, _client, all_origins,
+                    max_depth=depth, top_k=top_k, bridge_ids=existing_path_ids,
+                    do_stitch=False,
+                ):
+                    if event.get("type") == "expansion":
+                        visible_ids.update(n["id"] for n in event.get("nodes", []))
+                    event_type = event.get("type", "progress")
+                    yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
-        # Balanced expansion around each researcher of interest (the origins). The
-        # connecting-path nodes are passed as already-seen so they aren't re-grown.
-        all_origins = [new_id] + existing_origins
-        all_path_nodes = list(set(new_path_node_ids + existing_path_ids))
+            # Phase 2: paths (usually already finished by now).
+            if path_task is not None:
+                path_results = await path_task
+                path_task = None
+                for result in path_results:
+                    if isinstance(result, Exception):
+                        log.warning("Path finding failed: %s", result)
+                        continue
+                    pair_key = "||".join(sorted([result["from_id"], result["to_id"]]))
+                    for n in result["nodes"]:
+                        if n["type"] == "path":
+                            n = {**n, "path_pair": pair_key}
+                            new_path_node_ids.append(n["id"])
+                        visible_ids.add(n["id"])
+                        yield f"event: node\ndata: {json.dumps(n)}\n\n"
+                    for e in result["edges"]:
+                        yield f"event: edge\ndata: {json.dumps(e)}\n\n"
+                    path_event = {
+                        k: result[k]
+                        for k in ("from_id", "from_name", "to_id", "to_name", "hops", "found", "steps")
+                    }
+                    yield f"event: path\ndata: {json.dumps(path_event)}\n\n"
 
-        if depth > 0:
-            yield f"event: progress\ndata: {json.dumps({'message': 'Building neighborhood graph…'})}\n\n"
+            # Phase 3: give the fresh path nodes their small bridge neighborhoods
+            # (they only exist now). May rediscover a phase-1 node; the client
+            # merges duplicates by id.
+            new_bridges = [b for b in dict.fromkeys(new_path_node_ids) if b not in set(all_origins)]
+            if depth > 0 and new_bridges:
+                async for event in expand_graph(
+                    backend, _client, [],
+                    max_depth=depth, top_k=top_k, bridge_ids=new_bridges,
+                    do_stitch=False,
+                ):
+                    if event.get("type") == "expansion":
+                        visible_ids.update(n["id"] for n in event.get("nodes", []))
+                    event_type = event.get("type", "progress")
+                    yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
-            async for event in expand_graph(
-                backend, _client, all_origins,
-                max_depth=depth, top_k=top_k, bridge_ids=all_path_nodes,
-            ):
-                event_type = event.get("type", "progress")
-                yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+            # One stitch across everything now visible (cache-only).
+            if depth > 0:
+                stitch = await stitch_edges(backend, visible_ids)
+                if stitch:
+                    expansion = {"type": "expansion", "depth": depth, "nodes": [], "edges": stitch}
+                    yield f"event: expansion\ndata: {json.dumps(expansion)}\n\n"
+        finally:
+            # Client disconnect closes this generator mid-stream; don't leave
+            # the path gather running as an orphan.
+            if path_task is not None:
+                path_task.cancel()
 
         yield "event: done\ndata: {}\n\n"
 
