@@ -98,8 +98,11 @@ tests/                pytest suite
    node's label (otherwise only the researchers + connecting path are labeled, and
    the rest show their name on hover); **Layout** sliders (Spacing, Link length) tune
    the force-directed layout live without re-running the search. The sidebar itself
-   can be dragged to resize (snapping to its default width) or collapsed entirely by
-   clicking the handle; widths and card states persist across reloads.
+   can be dragged to resize (snapping to its default width), collapsed entirely by
+   clicking the handle, or folded to the left with the **☰ menu button**; widths and
+   card states persist across reloads. On narrow screens (phones) the sidebar becomes a
+   full-screen overlay and a segmented **Graph / Menu** switcher at the top toggles
+   between the graph and the controls.
 
 After expanding each researcher's neighborhood, the backend also adds the real edges
 among the nodes that are already on screen, so the connecting/middle nodes link into
