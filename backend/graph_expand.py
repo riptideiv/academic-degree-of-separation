@@ -163,7 +163,10 @@ async def expand_graph(
     # links the connecting/middle nodes into the graph and interconnects the
     # neighborhoods, instead of leaving thin chains between two bushy hubs.
     if graph_nodes:
-        neighbor_map = await backend.get_neighbors_batch(list(graph_nodes))
+        # Cache-only: stitch edges are cosmetic periphery, not worth a fresh
+        # round of OpenAlex calls for never-expanded leaf rings (leaf-to-leaf
+        # edges whose rings were never cached are simply not drawn).
+        neighbor_map = await backend.get_neighbors_batch(list(graph_nodes), cached_only=True)
         stitch = []
         for src, conns in neighbor_map.items():
             for conn in conns:

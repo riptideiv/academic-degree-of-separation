@@ -14,8 +14,15 @@ class GraphBackend(ABC):
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         pass
 
-    async def get_neighbors_batch(self, author_ids: list[str]) -> dict[str, list[Connection]]:
-        """Expand all author_ids concurrently. Override for bulk-query backends."""
+    async def get_neighbors_batch(
+        self, author_ids: list[str], cached_only: bool = False
+    ) -> dict[str, list[Connection]]:
+        """Expand all author_ids concurrently. Override for bulk-query backends.
+
+        `cached_only` asks the backend to serve only already-cached rings and
+        skip remote-API fetches (ids without a cached ring resolve to []).
+        Backends whose bulk reads carry no remote-API cost may ignore it.
+        """
         results = await asyncio.gather(
             *[self.get_neighbors(aid) for aid in author_ids],
             return_exceptions=True,
@@ -164,14 +171,18 @@ class OpenAlexBackend(GraphBackend):
                 connections.append(inc or out)
         return connections
 
-    async def get_neighbors_batch(self, ids: list[str]) -> dict[str, list[Connection]]:
+    async def get_neighbors_batch(
+        self, ids: list[str], cached_only: bool = False
+    ) -> dict[str, list[Connection]]:
         """
         Return neighbors for all ids (author or work). Reads walk the cache layers
         in order — in-memory LRU, then the durable store, then OpenAlex — with each
         id fetched under ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so its ring is complete;
         results are filtered to the type-appropriate active set before returning
         (self._work_edge_types for work ids, self._edge_types for author ids —
-        dispatched by OpenAlex ID prefix).
+        dispatched by OpenAlex ID prefix). With cached_only=True (the stitch pass)
+        OpenAlex is never consulted: only memory + the durable store are read, and
+        uncached ids resolve to [].
         """
         unique = sorted(set(ids))
         resolved: dict[str, list[Connection]] = {}
@@ -182,47 +193,54 @@ class OpenAlexBackend(GraphBackend):
             if hit is not None:
                 resolved[i] = hit
 
-        # 2) Claim ids nobody is fetching; collect futures for ids already in flight.
-        loop = asyncio.get_running_loop()
-        owned: list[str] = []
-        waiting: dict[str, asyncio.Future] = {}
-        for i in unique:
-            if i in resolved:
-                continue
-            fut = self._inflight.get(i)
-            if fut is None:
-                self._inflight[i] = loop.create_future()
-                owned.append(i)
-            else:
-                waiting[i] = fut
+        if cached_only:
+            # Memory + durable store only; no OpenAlex, no in-flight claims.
+            misses = [i for i in unique if i not in resolved]
+            if misses:
+                resolved.update(await self._cache.fetch_from_store(misses))
+        else:
+            # 2) Claim ids nobody is fetching; collect futures for ids already
+            #    in flight.
+            loop = asyncio.get_running_loop()
+            owned: list[str] = []
+            waiting: dict[str, asyncio.Future] = {}
+            for i in unique:
+                if i in resolved:
+                    continue
+                fut = self._inflight.get(i)
+                if fut is None:
+                    self._inflight[i] = loop.create_future()
+                    owned.append(i)
+                else:
+                    waiting[i] = fut
 
-        # 3) Fetch owned ids: durable store first, then OpenAlex.
-        try:
-            if owned:
-                from_store = await self._cache.fetch_from_store(owned)
-                still_missing = [i for i in owned if i not in from_store]
-                fresh: dict[str, list[Connection]] = {}
-                if still_missing:
-                    fresh = await self._fetch_neighbors_batch(still_missing)
-                    self._cache.put(fresh)
+            # 3) Fetch owned ids: durable store first, then OpenAlex.
+            try:
+                if owned:
+                    from_store = await self._cache.fetch_from_store(owned)
+                    still_missing = [i for i in owned if i not in from_store]
+                    fresh: dict[str, list[Connection]] = {}
+                    if still_missing:
+                        fresh = await self._fetch_neighbors_batch(still_missing)
+                        self._cache.put(fresh)
+                    for i in owned:
+                        conns = from_store[i] if i in from_store else fresh.get(i, [])
+                        resolved[i] = conns
+                        fut = self._inflight.pop(i)
+                        if not fut.done():
+                            fut.set_result(conns)
+            except BaseException:
+                # Resolve our futures so waiters don't hang, and drop the
+                # in-flight entries so a later call retries the fetch.
                 for i in owned:
-                    conns = from_store[i] if i in from_store else fresh.get(i, [])
-                    resolved[i] = conns
-                    fut = self._inflight.pop(i)
-                    if not fut.done():
-                        fut.set_result(conns)
-        except BaseException:
-            # Resolve our futures so waiters don't hang, and drop the in-flight
-            # entries so a later call retries the fetch.
-            for i in owned:
-                fut = self._inflight.pop(i, None)
-                if fut is not None and not fut.done():
-                    fut.set_result([])
-            raise
+                    fut = self._inflight.pop(i, None)
+                    if fut is not None and not fut.done():
+                        fut.set_result([])
+                raise
 
-        # 4) Await fetches owned by concurrent batches.
-        for i, fut in waiting.items():
-            resolved[i] = await fut
+            # 4) Await fetches owned by concurrent batches.
+            for i, fut in waiting.items():
+                resolved[i] = await fut
 
         result: dict[str, list[Connection]] = {}
         for i in ids:

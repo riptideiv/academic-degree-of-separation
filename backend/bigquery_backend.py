@@ -22,7 +22,9 @@ class BigQueryBackend(GraphBackend):
         batch = await self.get_neighbors_batch([author_id])
         return batch.get(author_id, [])
 
-    async def get_neighbors_batch(self, author_ids: list[str]) -> dict[str, list[Connection]]:
+    async def get_neighbors_batch(
+        self, author_ids: list[str], cached_only: bool = False
+    ) -> dict[str, list[Connection]]:
         full_ids = [f"https://openalex.org/{aid}" for aid in author_ids]
 
         tasks = []
