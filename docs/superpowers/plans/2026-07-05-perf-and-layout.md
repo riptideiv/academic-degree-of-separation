@@ -575,28 +575,85 @@ In `backend/graph_backend.py`, base class — replace the `get_neighbors_batch` 
 
 (body unchanged)
 
-In `OpenAlexBackend.get_neighbors_batch` (the Task 3 version): change the signature to
+Replace the whole `OpenAlexBackend.get_neighbors_batch` method (the Task 3 version) with this — the cache-only branch replaces the claim/fetch/await steps and shares the final filter loop:
 
 ```python
     async def get_neighbors_batch(
         self, ids: list[str], cached_only: bool = False
     ) -> dict[str, list[Connection]]:
-```
+        """
+        Return neighbors for all ids (author or work). Reads walk the cache layers
+        in order — in-memory LRU, then the durable store, then OpenAlex — with each
+        id fetched under ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so its ring is complete;
+        results are filtered to the type-appropriate active set before returning
+        (self._work_edge_types for work ids, self._edge_types for author ids —
+        dispatched by OpenAlex ID prefix). With cached_only=True (the stitch pass)
+        OpenAlex is never consulted: only memory + the durable store are read, and
+        uncached ids resolve to [].
+        """
+        unique = sorted(set(ids))
+        resolved: dict[str, list[Connection]] = {}
 
-and insert this block between step 1 (memory hits) and step 2 (claim ids):
+        # 1) In-memory hits (sync, LRU-touch).
+        for i in unique:
+            hit = self._cache.get_memory(i)
+            if hit is not None:
+                resolved[i] = hit
 
-```python
-        # Cache-only mode (stitch pass): memory + durable store, never OpenAlex.
-        # Ids with no cached ring resolve to [] via the final filter loop.
         if cached_only:
+            # Memory + durable store only; no OpenAlex, no in-flight claims.
             misses = [i for i in unique if i not in resolved]
             if misses:
                 resolved.update(await self._cache.fetch_from_store(misses))
-            result: dict[str, list[Connection]] = {}
-            for i in ids:
-                active = self._work_edge_types if _is_work_id(i) else self._edge_types
-                result[i] = [c for c in resolved.get(i, []) if c.connection_type in active]
-            return result
+        else:
+            # 2) Claim ids nobody is fetching; collect futures for ids already
+            #    in flight.
+            loop = asyncio.get_running_loop()
+            owned: list[str] = []
+            waiting: dict[str, asyncio.Future] = {}
+            for i in unique:
+                if i in resolved:
+                    continue
+                fut = self._inflight.get(i)
+                if fut is None:
+                    self._inflight[i] = loop.create_future()
+                    owned.append(i)
+                else:
+                    waiting[i] = fut
+
+            # 3) Fetch owned ids: durable store first, then OpenAlex.
+            try:
+                if owned:
+                    from_store = await self._cache.fetch_from_store(owned)
+                    still_missing = [i for i in owned if i not in from_store]
+                    fresh: dict[str, list[Connection]] = {}
+                    if still_missing:
+                        fresh = await self._fetch_neighbors_batch(still_missing)
+                        self._cache.put(fresh)
+                    for i in owned:
+                        conns = from_store[i] if i in from_store else fresh.get(i, [])
+                        resolved[i] = conns
+                        fut = self._inflight.pop(i)
+                        if not fut.done():
+                            fut.set_result(conns)
+            except BaseException:
+                # Resolve our futures so waiters don't hang, and drop the
+                # in-flight entries so a later call retries the fetch.
+                for i in owned:
+                    fut = self._inflight.pop(i, None)
+                    if fut is not None and not fut.done():
+                        fut.set_result([])
+                raise
+
+            # 4) Await fetches owned by concurrent batches.
+            for i, fut in waiting.items():
+                resolved[i] = await fut
+
+        result: dict[str, list[Connection]] = {}
+        for i in ids:
+            active = self._work_edge_types if _is_work_id(i) else self._edge_types
+            result[i] = [c for c in resolved.get(i, []) if c.connection_type in active]
+        return result
 ```
 
 In `backend/bigquery_backend.py:25`, change the override signature to accept (and ignore) the flag, so `expand_graph` can pass it regardless of backend:
