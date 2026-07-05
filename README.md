@@ -71,21 +71,28 @@ backend/
   bfs.py              Bidirectional BFS path-finder
   graph_backend.py    OpenAlex graph backend (co-author / citation / institution edges)
   graph_expand.py     Neighborhood expansion (ranked BFS) for the visualization
-  openalex_client.py  Thin async OpenAlex HTTP client (shared, pooled)
+  openalex_client.py  Thin async OpenAlex HTTP client (shared, pooled, HTTP/2,
+                      author-metadata LRU)
+  neighbor_store.py   Neighbor-ring cache: bounded LRU + durable store (JSON/Supabase)
   bigquery_backend.py Optional BigQuery backend (same interface)
   models.py           Pydantic models
 frontend/
   index.html, app.js, style.css   Cytoscape UI (served as static files)
+scripts/
+  bench_search.py     Benchmark harness for /api/graph/expand (cold vs. warm cache)
+  bench_ab.py         Interleaved A/B cold-search benchmark: working tree vs a baseline git ref
 tests/                pytest suite
 ```
 
 ## How it works
 
 1. **Search** (`/api/authors`) resolves names to OpenAlex author IDs.
-2. **Expand** (`/api/graph/expand`) streams the graph as you add researchers: it finds
-   the shortest path between the new researcher and each existing one (BFS), then
-   builds a ranked neighborhood around everyone. Each connected pair emits a `path`
-   event carrying the hop count and the ordered steps.
+2. **Expand** (`/api/graph/expand`) streams the graph as you add researchers: the
+   shortest-path search (BFS) between the new researcher and each existing one runs
+   in the background while a ranked neighborhood around everyone is built and
+   streamed, so the graph grows during the search. Each connected pair emits a
+   `path` event carrying the hop count and the ordered steps as soon as the search
+   finishes.
 3. The **frontend** consumes the SSE stream, draws nodes/edges with Cytoscape, and
    lists the degrees of separation + shortest paths in the sidebar. Edge types share
    one color and are distinguished by dash pattern (solid = co-authorship, dashed =
@@ -106,7 +113,9 @@ tests/                pytest suite
 
 After expanding each researcher's neighborhood, the backend also adds the real edges
 among the nodes that are already on screen, so the connecting/middle nodes link into
-the network instead of forming isolated chains between the two hubs.
+the network instead of forming isolated chains between the two hubs. This stitch pass
+reads only the neighbor cache (no extra OpenAlex calls), so edges between nodes whose
+rings were never fetched are simply not drawn.
 
 ## Deployment
 

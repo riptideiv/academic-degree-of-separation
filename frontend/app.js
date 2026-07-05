@@ -862,20 +862,29 @@
   }
 
   // Pick a starting position for a freshly-streamed node so it appears next to
-  // its parent instead of piling at (0,0). Expansion nodes ring their owner
-  // origin (further out with depth); path nodes sit at their pair's midpoint;
-  // everything else falls back to the origin centroid. A jitter breaks up
-  // overlap and gives fCoSE a good starting point to relax from.
-  function seedPosition(nodeData) {
+  // its parent instead of piling at (0,0). Expansion nodes spawn near an
+  // already-placed node they connect to (seedHints), falling back to a ring
+  // around their owner origin (further out with depth); path nodes sit at their
+  // pair's midpoint; everything else falls back to the origin centroid. A jitter
+  // breaks up overlap and gives fCoSE a good starting point to relax from.
+  function seedPosition(nodeData, seedHints) {
     const jitter = r => (Math.random() - 0.5) * 2 * r;
     const near = (p, r) => ({ x: p.x + jitter(r), y: p.y + jitter(r) });
 
     if (nodeData.type === 'expansion') {
+      const depth = nodeData.depth || 1;
+      // Prefer the already-placed node this one actually connects to (from the
+      // expansion event's edge list) — the owner origin puts depth-2+ nodes at
+      // a random angle unrelated to their edges, which bakes in tangles.
+      const neighborId = seedHints && seedHints.get(nodeData.id);
+      if (neighborId) {
+        const neighbor = cy.getElementById(neighborId);
+        if (neighbor.length) return near(neighbor.position(), 60 + depth * 40);
+      }
       const owners = nodeData.expandOwners || [];
       for (const oid of owners) {
         const owner = cy.getElementById(oid);
         if (owner.length) {
-          const depth = nodeData.depth || 1;
           return near(owner.position(), 60 + depth * 40);
         }
       }
@@ -883,8 +892,10 @@
     if (nodeData.type === 'path') {
       const pair = nodeData.path_pair || (nodeData.pathPairs || [])[0];
       if (pair) {
-        const a = cy.getElementById(pair.from_id);
-        const b = cy.getElementById(pair.to_id);
+        // pair is the canonical "idA||idB" key (see pair_key in backend/app.py).
+        const [idA, idB] = pair.split('||');
+        const a = cy.getElementById(idA);
+        const b = cy.getElementById(idB);
         if (a.length && b.length) {
           const pa = a.position(), pb = b.position();
           return near({ x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 }, 40);
@@ -894,7 +905,7 @@
     return near(originsCentroid(), 120);
   }
 
-  function addOrUpdateNode(nodeData) {
+  function addOrUpdateNode(nodeData, seedHints) {
     if (nodeData.type === 'expansion') {
       const depth = nodeData.depth || 1;
       const op = depth <= 1 ? 1 : depth === 2 ? 0.65 : 0.4;
@@ -927,10 +938,10 @@
       }
       return;
     }
-    // Seed a starting position near the node's parent so it appears in a sensible
-    // spot immediately (origins are placed/pinned by the layout, so skip them).
+    // Seed a starting position near a connected or owner node so it appears in a
+    // sensible spot immediately (origins are placed/pinned by the layout, so skip them).
     const el = { group: 'nodes', data: { ...nodeData } };
-    if (nodeData.type !== 'origin') el.position = seedPosition(nodeData);
+    if (nodeData.type !== 'origin') el.position = seedPosition(nodeData, seedHints);
     cy.add(el);
     if (nodeData.type === 'path') state.pathNodes.add(nodeData.id);
   }
@@ -1034,7 +1045,13 @@
       source.addEventListener('expansion', e => {
         const data = JSON.parse(e.data);
         showProgress(`Building neighborhood (depth ${data.depth}/3)…`);
-        data.nodes.forEach(addOrUpdateNode);
+        // Nodes stream before their edges within an expansion event, so map
+        // each new node to something it connects to for spawn seeding.
+        const seedHints = new Map();
+        data.edges.forEach(ed => {
+          if (!seedHints.has(ed.target)) seedHints.set(ed.target, ed.source);
+        });
+        data.nodes.forEach(n => addOrUpdateNode(n, seedHints));
         data.edges.forEach(addEdge);
         scheduleGrow();
       });
@@ -1049,8 +1066,10 @@
         rescaleExpansionNodes();
         applyNameVisibility();
         applyEdgeFade();
-        // Final settle: relax + frame the already-grown graph without a re-shuffle.
-        runLayoutIncremental({ fit: true });
+        // Full-quality settle: one visible reorganization that untangles
+        // whatever arrangement the streaming order produced (origins stay
+        // pinned via fixedNodeConstraint inside runLayout).
+        runLayout();
         finish();
       });
 
@@ -1130,12 +1149,13 @@
     });
   }
 
-  // Incremental (non-destructive) layout used while the stream is arriving and
-  // for the final settle: keeps every node's current position (randomize:false)
-  // and only relaxes the newly-seeded nodes outward, so the graph visibly grows
-  // instead of re-shuffling. Cheaper than runLayout (fewer iterations, shorter
-  // animation). `fit` re-frames the viewport so the full graph always stays
-  // comfortably centered as it grows (generous padding); on by default.
+  // Incremental (non-destructive) layout used while the stream is arriving:
+  // keeps every node's current position (randomize:false) and only relaxes the
+  // newly-seeded nodes outward, so the graph visibly grows instead of
+  // re-shuffling. Cheaper than runLayout (fewer iterations, shorter animation),
+  // which does the one full-quality settle once the stream ends. `fit` re-frames
+  // the viewport so the full graph always stays comfortably centered as it grows
+  // (generous padding); on by default.
   function runLayoutIncremental({ fit = true } = {}) {
     if (!cy.nodes().length) return;
     if (!(window.cytoscapeFcose && cytoscape.__fcoseRegistered)) return;

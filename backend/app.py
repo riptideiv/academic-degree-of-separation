@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.bfs import find_path
 from backend.graph_backend import ALL_EDGE_TYPES, ALL_WORK_EDGE_TYPES, OpenAlexBackend, _is_work_id
-from backend.models import AuthorResult, AuthorWork, PaginatedAuthors, PaginatedWorks
+from backend.models import AuthorWork, PaginatedAuthors, PaginatedWorks
 from backend.neighbor_store import (
     JsonNeighborStore,
     NeighborCache,
@@ -180,13 +180,16 @@ async def _collect_path(
                 n["works_count"] = a.get("works_count", 0)
                 n["cited_by_count"] = a.get("cited_by_count", 0)
 
-    for n in nodes:
-        if n["type"] != "work":
-            continue
-        w = to_obj if n["id"] == to_id else await _client.get_work(n["id"])
-        n["cited_by_count"] = w.get("cited_by_count", 0)
-        n["publication_year"] = w.get("publication_year")
-        n["name"] = w.get("title", n["name"])
+    async def _work_details(n: dict) -> dict:
+        return to_obj if n["id"] == to_id else await _client.get_work(n["id"])
+
+    work_nodes = [n for n in nodes if n["type"] == "work"]
+    if work_nodes:
+        details = await asyncio.gather(*[_work_details(n) for n in work_nodes])
+        for n, w in zip(work_nodes, details):
+            n["cited_by_count"] = w.get("cited_by_count", 0)
+            n["publication_year"] = w.get("publication_year")
+            n["name"] = w.get("title", n["name"])
 
     return {
         "nodes": nodes,
@@ -203,7 +206,8 @@ async def _collect_path(
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return {"status": "ok"}
+    store = "supabase" if isinstance(_store, SupabaseNeighborStore) else "json"
+    return {"status": "ok", "store": store}
 
 
 @app.get("/api/authors", response_model=PaginatedAuthors)
@@ -251,8 +255,9 @@ async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge
 
 @app.delete("/api/cache")
 async def clear_cache():
-    """Wipe the server-side neighbor cache (in-memory LRU + persisted store)."""
+    """Wipe the server-side caches (neighbor LRU + persisted store + author LRU)."""
     await _cache.clear()
+    _client.clear_author_cache()
     return {"cleared": True}
 
 
@@ -299,7 +304,7 @@ async def graph_expand(
     depth: int = Query(default=2, ge=0, le=4),   # neighborhood expansion depth (0 = path only)
     top_k: int = Query(default=8, ge=1, le=25),  # neighbors kept per expansion level
 ):
-    from backend.graph_expand import expand_graph
+    from backend.graph_expand import _edge_key, expand_graph, stitch_edges
 
     edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
     work_edge_types = {e for e in work_edges if e in ALL_WORK_EDGE_TYPES} or ALL_WORK_EDGE_TYPES
@@ -341,16 +346,12 @@ async def graph_expand(
 
         backend = _make_backend(edge_types, work_edge_types)
         new_path_node_ids: list[str] = []
+        visible_ids: set[str] = {new_id} | set(existing_origins) | set(existing_path_ids)
+        all_origins = [new_id] + existing_origins
+        emitted_edge_keys: set[tuple] = set()
 
-        # Find paths from new researcher to all existing origins in parallel
-        if existing_origins:
-            yield f"event: progress\ndata: {json.dumps({'message': f'Finding connections to {len(existing_origins)} existing researcher(s)…'})}\n\n"
-
-            path_results = await asyncio.gather(*[
-                _collect_path(backend, new_id, new_name, oid)
-                for oid in existing_origins
-            ], return_exceptions=True)
-
+        def _path_events(path_results):
+            """SSE frames for gathered path results: nodes, edges, then one path event per pair."""
             for result in path_results:
                 if isinstance(result, Exception):
                     log.warning("Path finding failed: %s", result)
@@ -360,8 +361,10 @@ async def graph_expand(
                     if n["type"] == "path":
                         n = {**n, "path_pair": pair_key}
                         new_path_node_ids.append(n["id"])
+                    visible_ids.add(n["id"])
                     yield f"event: node\ndata: {json.dumps(n)}\n\n"
                 for e in result["edges"]:
+                    emitted_edge_keys.add(_edge_key(e["source"], e["target"], e["type"]))
                     yield f"event: edge\ndata: {json.dumps(e)}\n\n"
                 path_event = {
                     k: result[k]
@@ -369,22 +372,93 @@ async def graph_expand(
                 }
                 yield f"event: path\ndata: {json.dumps(path_event)}\n\n"
 
-        # Balanced expansion around each researcher of interest (the origins). The
-        # connecting-path nodes are passed as already-seen so they aren't re-grown.
-        all_origins = [new_id] + existing_origins
-        all_path_nodes = list(set(new_path_node_ids + existing_path_ids))
+        # Overlap the two expensive phases: the path BFS runs as a background
+        # gather while the origin expansion streams, so the user watches the
+        # graph grow during the search instead of staring at a progress line.
+        # Both phases share the ring cache, so no work is duplicated.
+        path_task = None
+        if existing_origins:
+            yield f"event: progress\ndata: {json.dumps({'message': f'Finding connections to {len(existing_origins)} existing researcher(s)…'})}\n\n"
+            path_task = asyncio.gather(*[
+                _collect_path(backend, new_id, new_name, oid)
+                for oid in existing_origins
+            ], return_exceptions=True)
 
-        if depth > 0:
-            yield f"event: progress\ndata: {json.dumps({'message': 'Building neighborhood graph…'})}\n\n"
+        try:
+            # Phase 1: expand the origins (existing path nodes get their small
+            # bridge budget here since they're known upfront). Stitching waits
+            # until every phase's nodes are on the canvas. The path gather is
+            # polled between events so the degrees answer lands as soon as the
+            # search finishes, not after the whole expansion.
+            if depth > 0:
+                yield f"event: progress\ndata: {json.dumps({'message': 'Building neighborhood graph…'})}\n\n"
+                async for event in expand_graph(
+                    backend, _client, all_origins,
+                    max_depth=depth, top_k=top_k, bridge_ids=existing_path_ids,
+                    do_stitch=False,
+                ):
+                    if event.get("type") == "expansion":
+                        visible_ids.update(n["id"] for n in event.get("nodes", []))
+                        for e in event.get("edges", []):
+                            emitted_edge_keys.add(_edge_key(e["source"], e["target"], e["type"]))
+                    event_type = event.get("type", "progress")
+                    yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+                    if path_task is not None and path_task.done():
+                        path_results = path_task.result()
+                        path_task = None
+                        for frame in _path_events(path_results):
+                            yield frame
 
-            async for event in expand_graph(
-                backend, _client, all_origins,
-                max_depth=depth, top_k=top_k, bridge_ids=all_path_nodes,
-            ):
-                event_type = event.get("type", "progress")
-                yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+            # Phase 2: paths (skipped when they already flushed during phase 1).
+            if path_task is not None:
+                path_results = await path_task
+                path_task = None
+                for frame in _path_events(path_results):
+                    yield frame
 
-        yield f"event: done\ndata: {{}}\n\n"
+            # Phase 3: give the fresh path nodes their small bridge neighborhoods
+            # (they only exist now). One ring level only — bridges just need a
+            # little halo, and every extra level here is a serial API round that
+            # the old merged flow got for free by batching bridges with origin
+            # frontiers. May rediscover a phase-1 node; the client merges by id.
+            new_bridges = [b for b in dict.fromkeys(new_path_node_ids) if b not in set(all_origins)]
+            if depth > 0 and new_bridges:
+                async for event in expand_graph(
+                    backend, _client, [],
+                    max_depth=1, top_k=top_k, bridge_ids=new_bridges,
+                    do_stitch=False,
+                ):
+                    if event.get("type") == "expansion":
+                        visible_ids.update(n["id"] for n in event.get("nodes", []))
+                        for e in event.get("edges", []):
+                            emitted_edge_keys.add(_edge_key(e["source"], e["target"], e["type"]))
+                    event_type = event.get("type", "progress")
+                    yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+
+            # One stitch across everything now visible (cache-only); the
+            # accumulated keys keep it from re-sending every edge already streamed.
+            if depth > 0:
+                stitch = await stitch_edges(backend, visible_ids, emitted_edge_keys)
+                if stitch:
+                    expansion = {"type": "expansion", "depth": depth, "nodes": [], "edges": stitch}
+                    yield f"event: expansion\ndata: {json.dumps(expansion)}\n\n"
+        except Exception as exc:
+            # Degraded-path behavior: an expansion failure shouldn't discard the
+            # path search — flush whatever it found before surfacing the error.
+            if path_task is not None:
+                path_results = await path_task
+                path_task = None
+                for frame in _path_events(path_results):
+                    yield frame
+            yield f"event: app_error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            return
+        finally:
+            # Client disconnect closes this generator mid-stream; don't leave
+            # the path gather running as an orphan.
+            if path_task is not None:
+                path_task.cancel()
+
+        yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(
         event_stream(),

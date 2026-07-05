@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from collections import OrderedDict
 from pathlib import Path
 
 import httpx
@@ -36,10 +37,19 @@ class OpenAlexClient:
         # We still send a descriptive User-Agent / mailto as a courtesy identifier.
         # Configure via OPENALEX_MAILTO env var or a "mailto" entry in api-keys.json.
         self._mailto = os.environ.get("OPENALEX_MAILTO") or keys.get("mailto", "") or ""
-        self._semaphore = asyncio.Semaphore(5)
+        # Bounds in-flight requests (concurrency, not req/s) so bursts stay
+        # modest under OpenAlex's credit-based rate limiting; the 429
+        # retry-with-backoff in _get() is the safety valve when we still
+        # overrun the limit.
+        self._semaphore = asyncio.Semaphore(10)
         # One shared client → connection pooling / keep-alive across the many calls
         # a single BFS makes. Created lazily so it binds to the running event loop.
         self._http: httpx.AsyncClient | None = None
+        # Author-metadata LRU (id → author record). Expansion ranking re-fetches
+        # the same author records every level/run; process-lifetime caching is
+        # fine because citation counts drift slowly.
+        self._author_cache: "OrderedDict[str, dict]" = OrderedDict()
+        self._author_cache_max = 50_000
 
     def _user_agent(self) -> str:
         ua = "researcher-degree-of-separation/1.0"
@@ -48,7 +58,7 @@ class OpenAlexClient:
     async def _http_client(self) -> httpx.AsyncClient:
         if self._http is None:
             self._http = httpx.AsyncClient(
-                timeout=30.0, headers={"User-Agent": self._user_agent()}
+                timeout=30.0, http2=True, headers={"User-Agent": self._user_agent()}
             )
         return self._http
 
@@ -100,7 +110,23 @@ class OpenAlexClient:
         return results, total
 
     async def get_author(self, author_id: str) -> dict:
-        return await self._get(f"{API_BASE}/authors/{author_id}", {})
+        # Served from / written to the author LRU: the batch path caches
+        # select-projected records whose fields are a superset of what
+        # get_author's consumers read, and the full record cached here is a
+        # superset of the projection, so the two shapes interchange safely.
+        hit = self._author_cache.get(author_id)
+        if hit is not None:
+            self._author_cache.move_to_end(author_id)
+            return hit
+        author = await self._get(f"{API_BASE}/authors/{author_id}", {})
+        self._author_cache[author_id] = author
+        while len(self._author_cache) > self._author_cache_max:
+            self._author_cache.popitem(last=False)
+        return author
+
+    def clear_author_cache(self) -> None:
+        """Drop all cached author records (the /api/cache wipe calls this)."""
+        self._author_cache.clear()
 
     async def get_author_works(self, author_id: str, limit: int = 20) -> list[dict]:
         data = await self._get(f"{API_BASE}/works", {
@@ -219,10 +245,27 @@ class OpenAlexClient:
         return combined
 
     async def get_authors_batch(self, author_ids: list[str]) -> list[dict]:
-        """Fetch multiple author records by ID; chunks large lists."""
+        """Fetch multiple author records by ID; chunks large lists.
+
+        Records are served from a bounded in-process LRU when possible — the
+        expansion ranking asks for the same authors level after level and run
+        after run, so this saves a full API round per level on warm paths.
+        """
         if not author_ids:
             return []
-        chunk_list = list(_chunks(author_ids, _FILTER_CHUNK))
+        combined: list[dict] = []
+        missing: list[str] = []
+        for aid in dict.fromkeys(author_ids):
+            hit = self._author_cache.get(aid)
+            if hit is not None:
+                self._author_cache.move_to_end(aid)
+                combined.append(hit)
+            else:
+                missing.append(aid)
+        if not missing:
+            return combined
+
+        chunk_list = list(_chunks(missing, _FILTER_CHUNK))
         results = await asyncio.gather(*[
             self._get(f"{API_BASE}/authors", {
                 "filter": f"ids.openalex:{'|'.join(chunk)}",
@@ -231,10 +274,15 @@ class OpenAlexClient:
             })
             for chunk in chunk_list
         ], return_exceptions=True)
-        combined: list[dict] = []
         for r in results:
-            if not isinstance(r, Exception):
-                combined.extend(r.get("results", []))
+            if isinstance(r, Exception):
+                continue
+            for author in r.get("results", []):
+                self._author_cache[_short_id(author["id"])] = author
+                self._author_cache.move_to_end(_short_id(author["id"]))
+                combined.append(author)
+        while len(self._author_cache) > self._author_cache_max:
+            self._author_cache.popitem(last=False)
         return combined
 
     async def get_institution_authors_batch(self, institution_ids: list[str], limit: int = 50) -> list[dict]:

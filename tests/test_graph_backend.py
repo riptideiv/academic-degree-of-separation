@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock
 from backend.graph_backend import OpenAlexBackend
 from backend.models import Connection
+from backend.neighbor_store import NeighborCache, NeighborStore
 
 
 def make_work(work_id, title, authors):
@@ -397,3 +398,99 @@ async def test_get_neighbors_batch_mixed_work_and_author_ids():
 
     assert result["W1"][0].target_author_id == "A9"
     assert result["A1"] == []
+
+
+async def test_overlapping_batch_fetches_disjoint_ids_immediately():
+    """A batch must not queue behind another batch's fetch for ids it doesn't share.
+
+    Old behavior: batch 2 needing {A1, A2} blocked on A1's lock (held by batch 1)
+    before fetching A2. New behavior: it fetches A2 right away and only awaits A1.
+    """
+    mock_client = AsyncMock()
+    a1_started = asyncio.Event()
+    release_a1 = asyncio.Event()
+    a2_started = asyncio.Event()
+
+    async def works(author_ids):
+        if "A1" in author_ids:
+            a1_started.set()
+            await release_a1.wait()
+        if "A2" in author_ids:
+            a2_started.set()
+        return []
+
+    mock_client.get_works_by_authors.side_effect = works
+    mock_client.get_authors_batch.return_value = []
+
+    backend = OpenAlexBackend(mock_client)
+    first = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
+    await a1_started.wait()
+    second = asyncio.create_task(backend.get_neighbors_batch(["A1", "A2"]))
+
+    # A2's fetch must start while A1's fetch is still blocked.
+    await asyncio.wait_for(a2_started.wait(), timeout=1)
+
+    release_a1.set()
+    assert await first == {"A1": []}
+    assert await second == {"A1": [], "A2": []}
+
+
+async def test_owner_failure_unblocks_waiters():
+    """If the owning batch's fetch raises, waiters retry the fetch themselves."""
+    fetch_started = asyncio.Event()
+    release = asyncio.Event()
+
+    class FlakyStore(NeighborStore):
+        def __init__(self):
+            self.calls = 0
+
+        async def fetch(self, ids):
+            self.calls += 1
+            if self.calls == 1:
+                fetch_started.set()
+                await release.wait()
+                raise RuntimeError("store down")
+            return {
+                i: [Connection(
+                    target_author_id="A2",
+                    target_name="Bob",
+                    connection_type="coauthor",
+                    label="Paper",
+                )]
+                for i in ids
+            }
+
+    store = FlakyStore()
+    mock_client = AsyncMock()
+    backend = OpenAlexBackend(mock_client, neighbor_cache=NeighborCache(store=store))
+    first = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
+    await fetch_started.wait()
+    second = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
+    await asyncio.sleep(0)  # let `second` attach to the in-flight future
+    release.set()
+
+    with pytest.raises(RuntimeError):
+        await first
+    result = await asyncio.wait_for(second, timeout=1)
+    assert [c.target_author_id for c in result["A1"]] == ["A2"]
+    assert store.calls == 2  # the waiter re-fetched after the owner failed
+    mock_client.get_works_by_authors.assert_not_called()
+
+
+async def test_cached_only_batch_never_hits_client():
+    mock_client = AsyncMock()
+    mock_client.get_works_by_authors.return_value = [
+        make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob")])
+    ]
+    mock_client.get_authors_batch.return_value = []
+
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
+    await backend.get_neighbors_batch(["A1"])  # populate the ring cache
+    mock_client.reset_mock()
+
+    result = await backend.get_neighbors_batch(["A1", "A9"], cached_only=True)
+
+    assert {c.target_author_id for c in result["A1"]} == {"A2"}
+    assert result["A9"] == []  # uncached id resolves empty — no fetch
+    mock_client.get_works_by_authors.assert_not_called()
+    mock_client.get_authors_batch.assert_not_called()

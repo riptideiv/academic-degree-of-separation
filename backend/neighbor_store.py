@@ -28,7 +28,7 @@ from backend.models import Connection
 
 log = logging.getLogger(__name__)
 
-# How often the Supabase background task flushes pending entries.
+# How often the background flush tasks (JSON / Supabase) persist pending entries.
 FLUSH_INTERVAL_S = 5.0
 
 
@@ -63,41 +63,94 @@ class JsonNeighborStore(NeighborStore):
     """Serialise the whole cache to a JSON file alongside the app.
 
     Holds its own full in-memory copy (`_data`) so it stays the source of truth
-    independent of the bounded LRU; each Connection round-trips via its Pydantic
-    dict so persistence is lossless. `record` rewrites the file (cheap on local
-    disk). Default store for local dev/tests — offline, no external service.
+    independent of the bounded LRU. `record` only updates `_data` and marks it
+    dirty (O(1), request path); a background task started in `open` flushes to
+    disk every FLUSH_INTERVAL_S, and `close` stops it and does a final flush
+    — the same pattern as SupabaseNeighborStore. The dump + write run in a
+    worker thread so the event loop never blocks on file I/O.
     """
 
     def __init__(self, path: Path):
         self._path = path
         self._data: dict[str, list[Connection]] = {}
+        self._dirty = False
+        self._flush_task: asyncio.Task | None = None
+        self._stop = asyncio.Event()
+        # Serialises flush bodies so two writers can never race on the file.
+        self._flush_lock = asyncio.Lock()
 
     async def open(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            raw = json.loads(self._path.read_text())
-            self._data = {aid: [Connection(**c) for c in conns] for aid, conns in raw.items()}
-        except Exception as exc:
-            log.warning("Could not load neighbor cache from disk: %s", exc)
+        if self._path.exists():
+            try:
+                raw = json.loads(self._path.read_text())
+                self._data = {aid: [Connection(**c) for c in conns] for aid, conns in raw.items()}
+            except Exception as exc:
+                log.warning("Could not load neighbor cache from disk: %s", exc)
+        if self._flush_task is None:
+            self._stop = asyncio.Event()
+            self._flush_task = asyncio.create_task(self._flush_loop())
 
     async def fetch(self, ids: list[str]) -> dict[str, list[Connection]]:
         return {i: self._data[i] for i in ids if i in self._data}
 
     def record(self, entries: dict[str, list[Connection]]) -> None:
         self._data.update(entries)
-        try:
-            serialisable = {
-                aid: [c.model_dump() for c in conns] for aid, conns in self._data.items()
-            }
-            self._path.write_text(json.dumps(serialisable))
-        except Exception as exc:
-            log.warning("Could not save neighbor cache to disk: %s", exc)
+        self._dirty = True
+
+    async def _flush_loop(self) -> None:
+        # Runs until close() sets _stop. The final iteration doubles as the
+        # close-time flush, so close() never cancels a write mid-flight (a
+        # cancelled `to_thread` would keep writing in its worker thread).
+        while True:
+            stopping = self._stop.is_set()
+            if not stopping:
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=FLUSH_INTERVAL_S)
+                    stopping = True
+                except asyncio.TimeoutError:
+                    pass
+            try:
+                await self.flush()
+            except Exception:  # keep the loop alive across transient I/O errors
+                log.exception("Neighbor-cache flush loop error; continuing")
+            if stopping:
+                return
+
+    async def flush(self) -> None:
+        async with self._flush_lock:
+            if not self._dirty:
+                return
+            self._dirty = False
+            # Shallow snapshot on the loop thread: record() replaces whole entries
+            # (never mutates lists in place), so the worker thread can serialise
+            # the snapshot without racing concurrent record() calls.
+            snapshot = dict(self._data)
+
+            def _write() -> None:
+                serialisable = {
+                    aid: [c.model_dump() for c in conns] for aid, conns in snapshot.items()
+                }
+                self._path.write_text(json.dumps(serialisable))
+
+            try:
+                await asyncio.to_thread(_write)
+            except Exception as exc:
+                self._dirty = True  # retry on the next tick
+                log.warning("Could not save neighbor cache to disk: %s", exc)
 
     async def clear(self) -> None:
-        self._data.clear()
-        if self._path.exists():
-            self._path.unlink()
+        async with self._flush_lock:
+            self._data.clear()
+            self._dirty = False
+            if self._path.exists():
+                self._path.unlink()
+
+    async def close(self) -> None:
+        if self._flush_task is not None:
+            self._stop.set()
+            await self._flush_task  # waits out any in-flight write + final flush
+            self._flush_task = None
+        await self.flush()  # covers stores that were never open()ed
 
 
 class SupabaseNeighborStore(NeighborStore):
