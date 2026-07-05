@@ -315,3 +315,38 @@ async def test_get_authors_batch_chunks_large_list(api_key_file):
     authors = await client.get_authors_batch(author_ids)
     assert call_count == 2
     assert len(authors) == 2
+
+
+def test_concurrency_default_keyed(api_key_file, monkeypatch):
+    monkeypatch.delenv("OPENALEX_KEY", raising=False)
+    monkeypatch.delenv("OPENALEX_CONCURRENCY", raising=False)
+    client = OpenAlexClient(api_key_path=api_key_file)
+    assert client._semaphore._value == 15
+
+
+def test_concurrency_default_keyless(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENALEX_KEY", raising=False)
+    monkeypatch.delenv("OPENALEX_CONCURRENCY", raising=False)
+    client = OpenAlexClient(api_key_path=tmp_path / "missing.json")
+    assert client._semaphore._value == 8
+
+
+def test_concurrency_env_override(api_key_file, monkeypatch):
+    monkeypatch.delenv("OPENALEX_KEY", raising=False)
+    monkeypatch.setenv("OPENALEX_CONCURRENCY", "42")
+    client = OpenAlexClient(api_key_path=api_key_file)
+    assert client._semaphore._value == 42
+
+
+def test_concurrency_invalid_env_falls_back(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENALEX_KEY", raising=False)
+    monkeypatch.setenv("OPENALEX_CONCURRENCY", "not-a-number")
+    client = OpenAlexClient(api_key_path=tmp_path / "missing.json")
+    assert client._semaphore._value == 8
+
+
+def test_concurrency_zero_env_falls_back(api_key_file, monkeypatch):
+    monkeypatch.delenv("OPENALEX_KEY", raising=False)
+    monkeypatch.setenv("OPENALEX_CONCURRENCY", "0")
+    client = OpenAlexClient(api_key_path=api_key_file)
+    assert client._semaphore._value == 15
