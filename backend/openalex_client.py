@@ -37,8 +37,10 @@ class OpenAlexClient:
         # We still send a descriptive User-Agent / mailto as a courtesy identifier.
         # Configure via OPENALEX_MAILTO env var or a "mailto" entry in api-keys.json.
         self._mailto = os.environ.get("OPENALEX_MAILTO") or keys.get("mailto", "") or ""
-        # 10 concurrent requests: the OpenAlex polite pool (mailto/api-key
-        # identified, which we send) allows ~10 req/s.
+        # Bounds in-flight requests (concurrency, not req/s) so bursts stay
+        # modest under OpenAlex's credit-based rate limiting; the 429
+        # retry-with-backoff in _get() is the safety valve when we still
+        # overrun the limit.
         self._semaphore = asyncio.Semaphore(10)
         # One shared client → connection pooling / keep-alive across the many calls
         # a single BFS makes. Created lazily so it binds to the running event loop.
