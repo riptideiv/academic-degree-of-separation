@@ -38,6 +38,19 @@ TOP_K = 6  # mirrors the UI's "Small" neighborhood
 TIMEOUT_S = 300.0
 
 
+async def ensure_disposable_store(client: httpx.AsyncClient, allow_shared: bool) -> None:
+    """Refuse to wipe a server whose neighbor cache lives in the shared Supabase table."""
+    r = await client.get("/health")
+    r.raise_for_status()
+    if r.json().get("store") == "supabase" and not allow_shared:
+        raise SystemExit(
+            "target server persists its neighbor cache to the shared Supabase store; "
+            "the benchmark's DELETE /api/cache would wipe it for everyone. "
+            "Unset SUPABASE_DB_URL / supabase-db-url so the server uses a local JSON "
+            "store, or pass --allow-shared-store to proceed anyway."
+        )
+
+
 async def resolve(client: httpx.AsyncClient, name: str) -> tuple[str, str]:
     # Retry through transient OpenAlex 429s surfaced as 500s by the app.
     for attempt in range(5):
@@ -110,11 +123,14 @@ async def main() -> None:
     ap.add_argument("--edges", default="", help="comma-sep edge types (default: all)")
     ap.add_argument("--abort-after", type=float, default=None,
                     help="give up on a timed case after this many seconds")
+    ap.add_argument("--allow-shared-store", action="store_true",
+                    help="proceed even if the server's neighbor store is the shared Supabase table")
     args = ap.parse_args()
     pairs = HARD_PAIRS if args.set == "hard" else PAIRS
     edges = [e for e in args.edges.split(",") if e] or None
 
     async with httpx.AsyncClient(base_url=args.base, timeout=TIMEOUT_S) as client:
+        await ensure_disposable_store(client, args.allow_shared_store)
         ids = {}
         for name in {n for pair in pairs for n in pair}:
             ids[name] = await resolve(client, name)

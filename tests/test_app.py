@@ -4,6 +4,23 @@ from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
 from backend.app import app
 from backend.models import AuthorResult, WorkResult
+from backend.neighbor_store import JsonNeighborStore, SupabaseNeighborStore
+
+
+async def test_health_reports_json_store(tmp_path):
+    with patch("backend.app._store", JsonNeighborStore(tmp_path / "cache.json")):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "store": "json"}
+
+
+async def test_health_reports_supabase_store():
+    with patch("backend.app._store", SupabaseNeighborStore("postgresql://example")):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "store": "supabase"}
 
 
 async def test_search_authors_returns_results():
