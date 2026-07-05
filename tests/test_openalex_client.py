@@ -2,7 +2,6 @@ import json
 import pytest
 import respx
 import httpx
-from pathlib import Path
 from backend.openalex_client import OpenAlexClient, _short_id, _FILTER_CHUNK, _chunks
 
 
