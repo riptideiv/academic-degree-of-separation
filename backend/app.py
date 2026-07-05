@@ -408,13 +408,15 @@ async def graph_expand(
                     yield f"event: path\ndata: {json.dumps(path_event)}\n\n"
 
             # Phase 3: give the fresh path nodes their small bridge neighborhoods
-            # (they only exist now). May rediscover a phase-1 node; the client
-            # merges duplicates by id.
+            # (they only exist now). One ring level only — bridges just need a
+            # little halo, and every extra level here is a serial API round that
+            # the old merged flow got for free by batching bridges with origin
+            # frontiers. May rediscover a phase-1 node; the client merges by id.
             new_bridges = [b for b in dict.fromkeys(new_path_node_ids) if b not in set(all_origins)]
             if depth > 0 and new_bridges:
                 async for event in expand_graph(
                     backend, _client, [],
-                    max_depth=depth, top_k=top_k, bridge_ids=new_bridges,
+                    max_depth=1, top_k=top_k, bridge_ids=new_bridges,
                     do_stitch=False,
                 ):
                     if event.get("type") == "expansion":
