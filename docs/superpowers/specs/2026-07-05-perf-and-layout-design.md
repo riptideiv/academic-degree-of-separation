@@ -103,7 +103,8 @@ and look up both endpoint nodes.
 
 ## Out of scope
 
-- Heuristic fast-mode toggle (beam-limited BFS frontier) - possible follow-up.
+- Heuristic fast-mode toggle (beam-limited BFS frontier) - tried as a follow-up
+  on this branch and reverted: benchmarks showed it slower and lossier.
 - BigQuery backend.
 - Constraint-based radial placement (fCoSE placement constraints).
 

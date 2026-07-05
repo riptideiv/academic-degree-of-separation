@@ -26,7 +26,7 @@ PAIRS = [
 
 # Cross-field pairs for --set hard; combine with --edges coauthor,citation so
 # the institution shortcut (top colleagues of any big university) can't make
-# everything 2 hops. This is where frontiers explode and fast mode matters.
+# everything 2 hops. This is where frontiers explode and searches run longest.
 HARD_PAIRS = [
     ("Noam Chomsky", "Jennifer Doudna"),
     ("Terence Tao", "Jane Goodall"),
