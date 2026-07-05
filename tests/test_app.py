@@ -352,3 +352,14 @@ async def test_path_defaults_to_exact_search():
                     pass
 
     assert captured["frontier_cap"] is None
+
+
+async def test_clear_cache_wipes_author_lru_too():
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app._cache") as mock_cache:
+        mock_cache.clear = AsyncMock()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.delete("/api/cache")
+    assert resp.status_code == 200
+    mock_cache.clear.assert_awaited_once()
+    mock_client.clear_author_cache.assert_called_once()

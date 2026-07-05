@@ -108,7 +108,23 @@ class OpenAlexClient:
         return results, total
 
     async def get_author(self, author_id: str) -> dict:
-        return await self._get(f"{API_BASE}/authors/{author_id}", {})
+        # Served from / written to the author LRU: the batch path caches
+        # select-projected records whose fields are a superset of what
+        # get_author's consumers read, and the full record cached here is a
+        # superset of the projection, so the two shapes interchange safely.
+        hit = self._author_cache.get(author_id)
+        if hit is not None:
+            self._author_cache.move_to_end(author_id)
+            return hit
+        author = await self._get(f"{API_BASE}/authors/{author_id}", {})
+        self._author_cache[author_id] = author
+        while len(self._author_cache) > self._author_cache_max:
+            self._author_cache.popitem(last=False)
+        return author
+
+    def clear_author_cache(self) -> None:
+        """Drop all cached author records (the /api/cache wipe calls this)."""
+        self._author_cache.clear()
 
     async def get_author_works(self, author_id: str, limit: int = 20) -> list[dict]:
         data = await self._get(f"{API_BASE}/works", {

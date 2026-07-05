@@ -257,8 +257,9 @@ async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge
 
 @app.delete("/api/cache")
 async def clear_cache():
-    """Wipe the server-side neighbor cache (in-memory LRU + persisted store)."""
+    """Wipe the server-side caches (neighbor LRU + persisted store + author LRU)."""
     await _cache.clear()
+    _client.clear_author_cache()
     return {"cleared": True}
 
 

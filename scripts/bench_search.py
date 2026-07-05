@@ -30,10 +30,16 @@ TIMEOUT_S = 300.0
 
 
 async def resolve(client: httpx.AsyncClient, name: str) -> tuple[str, str]:
-    r = await client.get("/api/authors", params={"q": name, "per_page": 1})
-    r.raise_for_status()
-    top = r.json()["results"][0]
-    return top["id"], top["display_name"]
+    # Retry through transient OpenAlex 429s surfaced as 500s by the app.
+    for attempt in range(5):
+        r = await client.get("/api/authors", params={"q": name, "per_page": 1})
+        if r.status_code >= 500 and attempt < 4:
+            await asyncio.sleep(10 * (attempt + 1))
+            continue
+        r.raise_for_status()
+        top = r.json()["results"][0]
+        return top["id"], top["display_name"]
+    raise RuntimeError(f"could not resolve {name}")
 
 
 async def consume_expand(client: httpx.AsyncClient, params: dict) -> dict:
