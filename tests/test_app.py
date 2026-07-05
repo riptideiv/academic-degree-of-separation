@@ -1,6 +1,5 @@
 import asyncio
 import json
-import pytest
 from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
 from backend.app import app
@@ -206,8 +205,8 @@ async def test_path_sse_streams_events():
     assert result_events[0]["found"] is True
 
     # Also check event: lines to verify SSE event type names
-    event_type_lines = [l for l in full_text.splitlines() if l.startswith("event:")]
-    event_type_names = [l.split(":", 1)[1].strip() for l in event_type_lines]
+    event_type_lines = [ln for ln in full_text.splitlines() if ln.startswith("event:")]
+    event_type_names = [ln.split(":", 1)[1].strip() for ln in event_type_lines]
     assert "progress" in event_type_names
     assert "result" in event_type_names
 
@@ -405,8 +404,8 @@ async def test_graph_expand_emits_path_as_soon_as_search_finishes():
                 chunks = [c async for c in resp.aiter_text()]
 
     lines = "".join(chunks).splitlines()
-    path_indices = [i for i, l in enumerate(lines) if l.strip() == "event: path"]
-    expansion_indices = [i for i, l in enumerate(lines) if l.strip() == "event: expansion"]
+    path_indices = [i for i, ln in enumerate(lines) if ln.strip() == "event: path"]
+    expansion_indices = [i for i, ln in enumerate(lines) if ln.strip() == "event: expansion"]
     assert len(path_indices) == 1
     assert path_indices[0] < expansion_indices[-1]
 

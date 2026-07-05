@@ -1,4 +1,3 @@
-import pytest
 from backend.bfs import find_path
 from backend.graph_backend import GraphBackend
 from backend.models import Connection
