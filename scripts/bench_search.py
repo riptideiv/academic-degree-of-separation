@@ -6,7 +6,7 @@ the flow the UI runs when you add a second researcher. Warm runs repeat the
 timed step immediately, so every ring/metadata fetch is cached.
 
 Usage:
-    python scripts/bench_search.py [--base http://127.0.0.1:8000] [--fast] [--label NAME]
+    python scripts/bench_search.py [--base http://127.0.0.1:8000] [--label NAME]
 """
 
 import argparse
@@ -22,6 +22,15 @@ PAIRS = [
     ("Terence Tao", "Geoffrey Hinton"),
     ("Jennifer Doudna", "Yoshua Bengio"),
     ("Albert-Laszlo Barabasi", "Noam Chomsky"),
+]
+
+# Cross-field pairs for --set hard; combine with --edges coauthor,citation so
+# the institution shortcut (top colleagues of any big university) can't make
+# everything 2 hops. This is where frontiers explode and fast mode matters.
+HARD_PAIRS = [
+    ("Noam Chomsky", "Jennifer Doudna"),
+    ("Terence Tao", "Jane Goodall"),
+    ("Donald Knuth", "Sylvia Earle"),
 ]
 
 DEPTH = 2
@@ -74,43 +83,63 @@ async def consume_expand(client: httpx.AsyncClient, params: dict) -> dict:
     return {"seconds": time.perf_counter() - t0, "hops": hops, **counts}
 
 
-async def run_case(client: httpx.AsyncClient, a_id: str, b_id: str, fast: bool) -> dict:
-    base = {"depth": DEPTH, "top_k": TOP_K}
-    if fast:
-        base["fast"] = "1"
+async def run_case(
+    client: httpx.AsyncClient, a_id: str, b_id: str,
+    edges: list[str] | None = None, abort_after: float | None = None,
+) -> dict:
+    base: dict = {"depth": DEPTH, "top_k": TOP_K}
+    if edges:
+        base["edges"] = edges
     # Add origin A alone (not timed) so B's run includes the A<->B path search.
     await consume_expand(client, {"new_id": a_id, **base})
-    return await consume_expand(client, {"new_id": b_id, "origin_ids": a_id, **base})
+    t0 = time.perf_counter()
+    try:
+        return await asyncio.wait_for(
+            consume_expand(client, {"new_id": b_id, "origin_ids": a_id, **base}),
+            timeout=abort_after,
+        )
+    except asyncio.TimeoutError:
+        return {"seconds": time.perf_counter() - t0, "hops": None, "aborted": True}
 
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8000")
-    ap.add_argument("--fast", action="store_true", help="pass fast=1 (beam-limited search)")
     ap.add_argument("--label", default="run")
+    ap.add_argument("--set", choices=["default", "hard"], default="default")
+    ap.add_argument("--edges", default="", help="comma-sep edge types (default: all)")
+    ap.add_argument("--abort-after", type=float, default=None,
+                    help="give up on a timed case after this many seconds")
     args = ap.parse_args()
+    pairs = HARD_PAIRS if args.set == "hard" else PAIRS
+    edges = [e for e in args.edges.split(",") if e] or None
 
     async with httpx.AsyncClient(base_url=args.base, timeout=TIMEOUT_S) as client:
         ids = {}
-        for name in {n for pair in PAIRS for n in pair}:
+        for name in {n for pair in pairs for n in pair}:
             ids[name] = await resolve(client, name)
 
         rows = []
-        for a_name, b_name in PAIRS:
+        for a_name, b_name in pairs:
             a_id, _ = ids[a_name]
             b_id, _ = ids[b_name]
 
             await client.delete("/api/cache")
-            cold = await run_case(client, a_id, b_id, args.fast)
-            warm = await run_case(client, a_id, b_id, args.fast)
+            cold = await run_case(client, a_id, b_id,
+                                  edges=edges, abort_after=args.abort_after)
+            warm = await run_case(client, a_id, b_id,
+                                  edges=edges, abort_after=args.abort_after)
             rows.append((a_name, b_name, cold, warm))
+            note = " [ABORTED]" if cold.get("aborted") or warm.get("aborted") else ""
             print(
                 f"{a_name} <-> {b_name}: cold {cold['seconds']:.1f}s "
-                f"(hops={cold['hops']}), warm {warm['seconds']:.1f}s (hops={warm['hops']})",
+                f"(hops={cold['hops']}), warm {warm['seconds']:.1f}s (hops={warm['hops']})"
+                + note,
                 flush=True,
             )
 
-        print(f"\n== {args.label} (depth={DEPTH}, top_k={TOP_K}, fast={args.fast}) ==")
+        print(f"\n== {args.label} (set={args.set}, edges={args.edges or 'all'}, "
+              f"depth={DEPTH}, top_k={TOP_K}) ==")
         print(f"{'pair':<40} {'cold_s':>7} {'warm_s':>7} {'hops':>4}")
         for a, b, cold, warm in rows:
             print(f"{a + ' <-> ' + b:<40} {cold['seconds']:>7.1f} {warm['seconds']:>7.1f} "
