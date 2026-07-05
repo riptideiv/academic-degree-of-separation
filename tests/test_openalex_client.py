@@ -357,3 +357,41 @@ async def test_get_authors_batch_fetches_only_uncached_ids(api_key_file):
     last_params = dict(httpx.QueryParams(route.calls.last.request.url.query))
     assert last_params["filter"] == "ids.openalex:A2"  # A1 came from the LRU
     assert {a["display_name"] for a in result} == {"A1", "A2"}
+
+
+@respx.mock
+async def test_get_author_populates_and_reads_author_lru(api_key_file):
+    single = respx.get("https://api.openalex.org/authors/A123").mock(
+        return_value=httpx.Response(200, json={
+            "id": "https://openalex.org/A123", "display_name": "Alice",
+            "last_known_institutions": [], "works_count": 2, "cited_by_count": 5,
+        })
+    )
+    batch = respx.get("https://api.openalex.org/authors").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+
+    first = await client.get_author("A123")
+    second = await client.get_author("A123")
+    assert single.call_count == 1  # second read came from the LRU
+    assert second == first
+
+    # The batch path reuses the record get_author cached — no batch HTTP call.
+    result = await client.get_authors_batch(["A123"])
+    assert batch.call_count == 0
+    assert result[0]["display_name"] == "Alice"
+
+
+@respx.mock
+async def test_clear_author_cache_forces_refetch(api_key_file):
+    route = respx.get("https://api.openalex.org/authors/A123").mock(
+        return_value=httpx.Response(200, json={
+            "id": "https://openalex.org/A123", "display_name": "Alice",
+        })
+    )
+    client = OpenAlexClient(api_key_path=api_key_file)
+    await client.get_author("A123")
+    client.clear_author_cache()
+    await client.get_author("A123")
+    assert route.call_count == 2
