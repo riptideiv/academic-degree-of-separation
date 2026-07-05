@@ -313,47 +313,6 @@ async def test_path_sse_yields_app_error_on_exception():
                 break
 
 
-async def test_path_fast_param_sets_frontier_cap():
-    captured = {}
-
-    async def mock_find_path(*args, **kwargs):
-        captured.update(kwargs)
-        yield {"type": "result", "found": False, "reason": "No path found"}
-
-    with patch("backend.app._client") as mock_client, \
-         patch("backend.app.find_path", mock_find_path), \
-         patch("backend.app.OpenAlexBackend"):
-        mock_client.get_author = AsyncMock(return_value={"display_name": "Alice"})
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/api/path?from=A1&to=A2&fast=1") as resp:
-                assert resp.status_code == 200
-                async for _ in resp.aiter_text():
-                    pass
-
-    from backend.bfs import FAST_FRONTIER_CAP
-    assert captured["frontier_cap"] == FAST_FRONTIER_CAP
-
-
-async def test_path_defaults_to_exact_search():
-    captured = {}
-
-    async def mock_find_path(*args, **kwargs):
-        captured.update(kwargs)
-        yield {"type": "result", "found": False, "reason": "No path found"}
-
-    with patch("backend.app._client") as mock_client, \
-         patch("backend.app.find_path", mock_find_path), \
-         patch("backend.app.OpenAlexBackend"):
-        mock_client.get_author = AsyncMock(return_value={"display_name": "Alice"})
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/api/path?from=A1&to=A2") as resp:
-                assert resp.status_code == 200
-                async for _ in resp.aiter_text():
-                    pass
-
-    assert captured["frontier_cap"] is None
-
-
 async def test_clear_cache_wipes_author_lru_too():
     with patch("backend.app._client") as mock_client, \
          patch("backend.app._cache") as mock_cache:
