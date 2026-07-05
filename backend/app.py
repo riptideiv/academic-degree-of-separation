@@ -206,7 +206,8 @@ async def _collect_path(
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return {"status": "ok"}
+    store = "supabase" if isinstance(_store, SupabaseNeighborStore) else "json"
+    return {"status": "ok", "store": store}
 
 
 @app.get("/api/authors", response_model=PaginatedAuthors)

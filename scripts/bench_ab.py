@@ -6,22 +6,25 @@ working, baseline, working …). Runs never overlap, so the versions don't
 compete for API bandwidth; alternation gives both the same "API weather".
 
 The baseline is checked out into a temporary git worktree with its own
-isolated neighbor cache; api-keys.json (git-ignored) is copied in so both
-sides use the same OpenAlex key. Servers and worktree are cleaned up on exit.
+isolated neighbor cache; only the OpenAlex credentials (openalex-key, mailto)
+from api-keys.json (git-ignored) are copied in so both sides use the same
+OpenAlex key without sharing a durable store. Servers and worktree are
+cleaned up on exit.
 
 Usage:
     python scripts/bench_ab.py --ref origin/master
     python scripts/bench_ab.py --ref HEAD~1 --rounds 2 --pair "Geoffrey Hinton::Noam Chomsky"
 
 Run this BEFORE committing anything that touches the search/expansion/cache
-path (see AGENTS.md). Each round costs two cold sweeps of one pair — mind the
-OpenAlex credit budget.
+path — cold-search regressions only show up in benchmarks, not in the test
+suite. Each round costs two cold sweeps of one pair — mind the OpenAlex
+credit budget.
 """
 
 import argparse
 import asyncio
 import importlib.util
-import shutil
+import json
 import subprocess
 import sys
 import tempfile
@@ -77,6 +80,8 @@ async def main() -> None:
     ap.add_argument("--gap", type=float, default=10.0, help="seconds between runs")
     ap.add_argument("--port-base", type=int, default=8101)
     ap.add_argument("--port-work", type=int, default=8102)
+    ap.add_argument("--allow-shared-store", action="store_true",
+                    help="proceed even if a server's neighbor store is the shared Supabase table")
     args = ap.parse_args()
 
     a_name, b_name = args.pair.split("::", 1)
@@ -92,11 +97,16 @@ async def main() -> None:
     try:
         subprocess.run(["git", "worktree", "add", "--detach", str(worktree), args.ref],
                        cwd=REPO, check=True, capture_output=True)
-        # api-keys.json is git-ignored, so the worktree lacks it — copy it in
-        # so both sides hit OpenAlex with the same key (and rate limits).
+        # api-keys.json is git-ignored, so the worktree lacks it — copy in only
+        # the OpenAlex credentials so both sides hit OpenAlex with the same key
+        # (and rate limits). Anything else (e.g. supabase-db-url) is dropped so
+        # the baseline can't attach to the same durable store as the working
+        # tree and defeat the isolated-cache premise.
         keys = REPO / "api-keys.json"
         if keys.exists():
-            shutil.copy(keys, worktree / "api-keys.json")
+            data = json.loads(keys.read_text())
+            slim = {k: data[k] for k in ("openalex-key", "mailto") if k in data}
+            (worktree / "api-keys.json").write_text(json.dumps(slim))
 
         print(f"baseline: {args.ref} ({ref_sha}) on :{args.port_base}")
         print(f"working:  {REPO} on :{args.port_work}")
@@ -106,6 +116,9 @@ async def main() -> None:
         work_url = f"http://127.0.0.1:{args.port_work}"
         await _wait_healthy(base_url)
         await _wait_healthy(work_url)
+        for url in (base_url, work_url):
+            async with httpx.AsyncClient(base_url=url, timeout=10.0) as client:
+                await bench.ensure_disposable_store(client, args.allow_shared_store)
 
         results: dict[str, list[dict]] = {"baseline": [], "working": []}
         for rnd in range(args.rounds):

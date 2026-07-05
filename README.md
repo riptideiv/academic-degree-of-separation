@@ -80,6 +80,7 @@ frontend/
   index.html, app.js, style.css   Cytoscape UI (served as static files)
 scripts/
   bench_search.py     Benchmark harness for /api/graph/expand (cold vs. warm cache)
+  bench_ab.py         Interleaved A/B cold-search benchmark: working tree vs a baseline git ref
 tests/                pytest suite
 ```
 
