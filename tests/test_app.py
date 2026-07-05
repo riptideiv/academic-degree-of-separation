@@ -1,3 +1,4 @@
+import asyncio
 import json
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -311,6 +312,103 @@ async def test_path_sse_yields_app_error_on_exception():
             if "message" in data:
                 assert "API down" in data["message"]
                 break
+
+
+async def test_graph_expand_failure_still_emits_paths_and_app_error():
+    """A phase-1 expansion failure flushes gathered path results before app_error."""
+    mock_path = [
+        {"author_id": "A1", "author_name": "Alice", "connection_to_next": "coauthor", "label": "Paper"},
+        {"author_id": "A2", "author_name": "Bob", "connection_to_next": None, "label": None},
+    ]
+
+    async def mock_find_path(*args, **kwargs):
+        yield {"type": "result", "found": True, "path": mock_path, "hops": 1}
+
+    async def mock_expand_graph(*args, **kwargs):
+        raise RuntimeError("store down")
+        yield  # pragma: no cover
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app.OpenAlexBackend"), \
+         patch("backend.graph_expand.expand_graph", mock_expand_graph):
+        mock_client.get_author = AsyncMock(side_effect=lambda aid: {
+            "display_name": {"A1": "Alice", "A2": "Bob"}.get(aid, aid)
+        })
+        mock_client.get_authors_batch = AsyncMock(return_value=[])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", "/api/graph/expand?new_id=A1&origin_ids=A2") as resp:
+                assert resp.status_code == 200
+                chunks = [c async for c in resp.aiter_text()]
+
+    full_text = "".join(chunks)
+    assert "event: path" in full_text
+    assert "event: app_error" in full_text
+    assert "store down" in full_text
+    assert "event: done" not in full_text
+    assert full_text.index("event: path") < full_text.index("event: app_error")
+
+
+async def test_graph_expand_stitch_suppresses_already_streamed_edges():
+    """The final stitch receives the canonical keys of every edge already streamed."""
+    async def mock_expand_graph(*args, **kwargs):
+        yield {
+            "type": "expansion", "depth": 1,
+            "nodes": [{"id": "A9", "name": "Nine", "type": "expansion", "depth": 1}],
+            "edges": [{"source": "A1", "target": "A9", "type": "coauthor", "label": "", "direction": None}],
+        }
+
+    stitch_mock = AsyncMock(return_value=[])
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.OpenAlexBackend"), \
+         patch("backend.graph_expand.expand_graph", mock_expand_graph), \
+         patch("backend.graph_expand.stitch_edges", stitch_mock):
+        mock_client.get_author = AsyncMock(return_value={"display_name": "Alice"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", "/api/graph/expand?new_id=A1") as resp:
+                assert resp.status_code == 200
+                async for _ in resp.aiter_text():
+                    pass
+
+    stitch_mock.assert_awaited_once()
+    emitted = stitch_mock.await_args.args[2]
+    assert ("A1", "A9", "coauthor") in emitted
+
+
+async def test_graph_expand_emits_path_as_soon_as_search_finishes():
+    """Path results flush between phase-1 expansion events once the gather is done."""
+    mock_path = [
+        {"author_id": "A1", "author_name": "Alice", "connection_to_next": "coauthor", "label": "Paper"},
+        {"author_id": "A2", "author_name": "Bob", "connection_to_next": None, "label": None},
+    ]
+
+    async def mock_find_path(*args, **kwargs):
+        yield {"type": "result", "found": True, "path": mock_path, "hops": 1}
+
+    async def mock_expand_graph(*args, **kwargs):
+        for depth in (1, 2, 3):
+            yield {"type": "expansion", "depth": depth, "nodes": [], "edges": []}
+            await asyncio.sleep(0.05)
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app.OpenAlexBackend"), \
+         patch("backend.graph_expand.expand_graph", mock_expand_graph), \
+         patch("backend.graph_expand.stitch_edges", AsyncMock(return_value=[])):
+        mock_client.get_author = AsyncMock(side_effect=lambda aid: {
+            "display_name": {"A1": "Alice", "A2": "Bob"}.get(aid, aid)
+        })
+        mock_client.get_authors_batch = AsyncMock(return_value=[])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", "/api/graph/expand?new_id=A1&origin_ids=A2") as resp:
+                assert resp.status_code == 200
+                chunks = [c async for c in resp.aiter_text()]
+
+    lines = "".join(chunks).splitlines()
+    path_indices = [i for i, l in enumerate(lines) if l.strip() == "event: path"]
+    expansion_indices = [i for i, l in enumerate(lines) if l.strip() == "event: expansion"]
+    assert len(path_indices) == 1
+    assert path_indices[0] < expansion_indices[-1]
 
 
 async def test_clear_cache_wipes_author_lru_too():

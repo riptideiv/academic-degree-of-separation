@@ -303,7 +303,7 @@ async def graph_expand(
     depth: int = Query(default=2, ge=0, le=4),   # neighborhood expansion depth (0 = path only)
     top_k: int = Query(default=8, ge=1, le=25),  # neighbors kept per expansion level
 ):
-    from backend.graph_expand import expand_graph, stitch_edges
+    from backend.graph_expand import _edge_key, expand_graph, stitch_edges
 
     edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
     work_edge_types = {e for e in work_edges if e in ALL_WORK_EDGE_TYPES} or ALL_WORK_EDGE_TYPES
@@ -347,6 +347,29 @@ async def graph_expand(
         new_path_node_ids: list[str] = []
         visible_ids: set[str] = {new_id} | set(existing_origins) | set(existing_path_ids)
         all_origins = [new_id] + existing_origins
+        emitted_edge_keys: set[tuple] = set()
+
+        def _path_events(path_results):
+            """SSE frames for gathered path results: nodes, edges, then one path event per pair."""
+            for result in path_results:
+                if isinstance(result, Exception):
+                    log.warning("Path finding failed: %s", result)
+                    continue
+                pair_key = "||".join(sorted([result["from_id"], result["to_id"]]))
+                for n in result["nodes"]:
+                    if n["type"] == "path":
+                        n = {**n, "path_pair": pair_key}
+                        new_path_node_ids.append(n["id"])
+                    visible_ids.add(n["id"])
+                    yield f"event: node\ndata: {json.dumps(n)}\n\n"
+                for e in result["edges"]:
+                    emitted_edge_keys.add(_edge_key(e["source"], e["target"], e["type"]))
+                    yield f"event: edge\ndata: {json.dumps(e)}\n\n"
+                path_event = {
+                    k: result[k]
+                    for k in ("from_id", "from_name", "to_id", "to_name", "hops", "found", "steps")
+                }
+                yield f"event: path\ndata: {json.dumps(path_event)}\n\n"
 
         # Overlap the two expensive phases: the path BFS runs as a background
         # gather while the origin expansion streams, so the user watches the
@@ -363,7 +386,9 @@ async def graph_expand(
         try:
             # Phase 1: expand the origins (existing path nodes get their small
             # bridge budget here since they're known upfront). Stitching waits
-            # until every phase's nodes are on the canvas.
+            # until every phase's nodes are on the canvas. The path gather is
+            # polled between events so the degrees answer lands as soon as the
+            # search finishes, not after the whole expansion.
             if depth > 0:
                 yield f"event: progress\ndata: {json.dumps({'message': 'Building neighborhood graph…'})}\n\n"
                 async for event in expand_graph(
@@ -373,31 +398,22 @@ async def graph_expand(
                 ):
                     if event.get("type") == "expansion":
                         visible_ids.update(n["id"] for n in event.get("nodes", []))
+                        for e in event.get("edges", []):
+                            emitted_edge_keys.add(_edge_key(e["source"], e["target"], e["type"]))
                     event_type = event.get("type", "progress")
                     yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+                    if path_task is not None and path_task.done():
+                        path_results = path_task.result()
+                        path_task = None
+                        for frame in _path_events(path_results):
+                            yield frame
 
-            # Phase 2: paths (usually already finished by now).
+            # Phase 2: paths (skipped when they already flushed during phase 1).
             if path_task is not None:
                 path_results = await path_task
                 path_task = None
-                for result in path_results:
-                    if isinstance(result, Exception):
-                        log.warning("Path finding failed: %s", result)
-                        continue
-                    pair_key = "||".join(sorted([result["from_id"], result["to_id"]]))
-                    for n in result["nodes"]:
-                        if n["type"] == "path":
-                            n = {**n, "path_pair": pair_key}
-                            new_path_node_ids.append(n["id"])
-                        visible_ids.add(n["id"])
-                        yield f"event: node\ndata: {json.dumps(n)}\n\n"
-                    for e in result["edges"]:
-                        yield f"event: edge\ndata: {json.dumps(e)}\n\n"
-                    path_event = {
-                        k: result[k]
-                        for k in ("from_id", "from_name", "to_id", "to_name", "hops", "found", "steps")
-                    }
-                    yield f"event: path\ndata: {json.dumps(path_event)}\n\n"
+                for frame in _path_events(path_results):
+                    yield frame
 
             # Phase 3: give the fresh path nodes their small bridge neighborhoods
             # (they only exist now). One ring level only — bridges just need a
@@ -413,15 +429,28 @@ async def graph_expand(
                 ):
                     if event.get("type") == "expansion":
                         visible_ids.update(n["id"] for n in event.get("nodes", []))
+                        for e in event.get("edges", []):
+                            emitted_edge_keys.add(_edge_key(e["source"], e["target"], e["type"]))
                     event_type = event.get("type", "progress")
                     yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
-            # One stitch across everything now visible (cache-only).
+            # One stitch across everything now visible (cache-only); the
+            # accumulated keys keep it from re-sending every edge already streamed.
             if depth > 0:
-                stitch = await stitch_edges(backend, visible_ids)
+                stitch = await stitch_edges(backend, visible_ids, emitted_edge_keys)
                 if stitch:
                     expansion = {"type": "expansion", "depth": depth, "nodes": [], "edges": stitch}
                     yield f"event: expansion\ndata: {json.dumps(expansion)}\n\n"
+        except Exception as exc:
+            # Degraded-path behavior: an expansion failure shouldn't discard the
+            # path search — flush whatever it found before surfacing the error.
+            if path_task is not None:
+                path_results = await path_task
+                path_task = None
+                for frame in _path_events(path_results):
+                    yield frame
+            yield f"event: app_error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            return
         finally:
             # Client disconnect closes this generator mid-stream; don't leave
             # the path gather running as an orphan.
