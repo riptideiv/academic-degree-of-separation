@@ -1,4 +1,3 @@
-import pytest
 from backend.bfs import find_path
 from backend.graph_backend import GraphBackend
 from backend.models import Connection
@@ -158,3 +157,4 @@ async def test_bfs_tolerates_neighbor_fetch_exception():
     # Should not crash; either found=False or found=True (depending on graph)
     assert result["type"] == "result"
     assert "found" in result
+

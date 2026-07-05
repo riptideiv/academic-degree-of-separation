@@ -14,8 +14,15 @@ class GraphBackend(ABC):
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         pass
 
-    async def get_neighbors_batch(self, author_ids: list[str]) -> dict[str, list[Connection]]:
-        """Expand all author_ids concurrently. Override for bulk-query backends."""
+    async def get_neighbors_batch(
+        self, author_ids: list[str], cached_only: bool = False
+    ) -> dict[str, list[Connection]]:
+        """Expand all author_ids concurrently. Override for bulk-query backends.
+
+        `cached_only` asks the backend to serve only already-cached rings and
+        skip remote-API fetches (ids without a cached ring resolve to []).
+        Backends whose bulk reads carry no remote-API cost may ignore it.
+        """
         results = await asyncio.gather(
             *[self.get_neighbors(aid) for aid in author_ids],
             return_exceptions=True,
@@ -51,8 +58,11 @@ class OpenAlexBackend(GraphBackend):
         # and reused regardless of which edge types are active. Default (no store,
         # unbounded) keeps the original always-in-memory behavior for tests.
         self._cache = neighbor_cache if neighbor_cache is not None else NeighborCache()
-        # Deduplicate overlapping cache misses from parallel path searches.
-        self._cache_locks: dict[str, asyncio.Lock] = {}
+        # Deduplicate overlapping cache misses from parallel path searches: the
+        # first batch to need an id owns its fetch (a Future in _inflight);
+        # concurrent batches await that future for shared ids while fetching
+        # their own un-shared ids immediately.
+        self._inflight: dict[str, asyncio.Future] = {}
 
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         tasks = []
@@ -161,54 +171,88 @@ class OpenAlexBackend(GraphBackend):
                 connections.append(inc or out)
         return connections
 
-    async def get_neighbors_batch(self, ids: list[str]) -> dict[str, list[Connection]]:
+    async def get_neighbors_batch(
+        self, ids: list[str], cached_only: bool = False
+    ) -> dict[str, list[Connection]]:
         """
         Return neighbors for all ids (author or work). Reads walk the cache layers
         in order — in-memory LRU, then the durable store, then OpenAlex — with each
         id fetched under ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so its ring is complete;
         results are filtered to the type-appropriate active set before returning
         (self._work_edge_types for work ids, self._edge_types for author ids —
-        dispatched by OpenAlex ID prefix).
+        dispatched by OpenAlex ID prefix). With cached_only=True (the stitch pass)
+        OpenAlex is never consulted: only memory + the durable store are read, and
+        uncached ids resolve to [].
         """
         unique = sorted(set(ids))
         resolved: dict[str, list[Connection]] = {}
 
-        # 1) In-memory hits (sync, LRU-touch) — no lock needed.
+        # 1) In-memory hits (sync, LRU-touch).
         for i in unique:
             hit = self._cache.get_memory(i)
             if hit is not None:
                 resolved[i] = hit
 
-        misses = [i for i in unique if i not in resolved]  # sorted → consistent lock order
-        locks: list[asyncio.Lock] = []
-        try:
-            for i in misses:
-                lock = self._cache_locks.setdefault(i, asyncio.Lock())
-                await lock.acquire()
-                locks.append(lock)
+        if cached_only:
+            # Memory + durable store only; no OpenAlex, no in-flight claims.
+            misses = [i for i in unique if i not in resolved]
+            if misses:
+                resolved.update(await self._cache.fetch_from_store(misses))
+        else:
+            # 2) Claim ids nobody is fetching; collect futures for ids already
+            #    in flight. A future resolving to None means its owner failed;
+            #    waiters re-enter the claim loop and fetch those ids themselves.
+            loop = asyncio.get_running_loop()
+            pending = [i for i in unique if i not in resolved]
+            while pending:
+                owned: list[str] = []
+                waiting: dict[str, asyncio.Future] = {}
+                for i in pending:
+                    hit = self._cache.get_memory(i)
+                    if hit is not None:
+                        resolved[i] = hit
+                        continue
+                    fut = self._inflight.get(i)
+                    if fut is None:
+                        self._inflight[i] = loop.create_future()
+                        owned.append(i)
+                    else:
+                        waiting[i] = fut
 
-            # 2) Re-check memory: a concurrent fetch may have filled it while we waited.
-            pending = []
-            for i in misses:
-                hit = self._cache.get_memory(i)
-                if hit is not None:
-                    resolved[i] = hit
-                else:
-                    pending.append(i)
+                # 3) Fetch owned ids: durable store first, then OpenAlex.
+                try:
+                    if owned:
+                        from_store = await self._cache.fetch_from_store(owned)
+                        still_missing = [i for i in owned if i not in from_store]
+                        fresh: dict[str, list[Connection]] = {}
+                        if still_missing:
+                            fresh = await self._fetch_neighbors_batch(still_missing)
+                            self._cache.put(fresh)
+                        for i in owned:
+                            conns = from_store[i] if i in from_store else fresh.get(i, [])
+                            resolved[i] = conns
+                            fut = self._inflight.pop(i)
+                            if not fut.done():
+                                fut.set_result(conns)
+                except BaseException:
+                    # Resolve our futures with the retry sentinel so waiters
+                    # refetch, and drop the in-flight entries so later calls
+                    # retry too.
+                    for i in owned:
+                        fut = self._inflight.pop(i, None)
+                        if fut is not None and not fut.done():
+                            fut.set_result(None)
+                    raise
 
-            # 3) Durable store, then 4) OpenAlex for whatever's still missing.
-            if pending:
-                from_store = await self._cache.fetch_from_store(pending)
-                resolved.update(from_store)
-                still_missing = [i for i in pending if i not in from_store]
-                if still_missing:
-                    fresh = await self._fetch_neighbors_batch(still_missing)
-                    self._cache.put(fresh)
-                    for i in still_missing:
-                        resolved[i] = fresh.get(i, [])
-        finally:
-            for lock in reversed(locks):
-                lock.release()
+                # 4) Await fetches owned by concurrent batches; ids whose owner
+                #    failed go back through the claim loop.
+                pending = []
+                for i, fut in waiting.items():
+                    conns = await fut
+                    if conns is None:
+                        pending.append(i)
+                    else:
+                        resolved[i] = conns
 
         result: dict[str, list[Connection]] = {}
         for i in ids:
