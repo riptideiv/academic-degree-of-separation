@@ -322,6 +322,38 @@ body {
 #empty-state {
   position: absolute;
   inset: 0;
+  z-index: 10;
+  overflow: hidden;
+}
+
+/* Decorative sample network sitting behind the prompt. */
+#sample-graph {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  filter: blur(5px);
+  opacity: 0.85;
+}
+#sample-graph .s-edges line {
+  stroke: #c9c9c9;
+  stroke-width: 2;
+}
+#sample-graph .s-origin { fill: #f5821e; }
+#sample-graph .s-path { fill: #5badd9; }
+#sample-graph .s-neigh { fill: #9a9a9a; }
+#sample-graph .s-work { fill: #7a5ea8; }
+
+/* White wash over the blurred graph so the copy reads cleanly. */
+#sample-wash {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+#empty-state-content {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -329,7 +361,6 @@ body {
   gap: 12px;
   text-align: center;
   padding: 24px;
-  z-index: 10;
 }
 #empty-state h1 {
   font-size: 22px;
