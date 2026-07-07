@@ -99,6 +99,7 @@
         settings</button>
       <button id="restore-default-layout" title="Reset spacing and link-length sliders to defaults">Default
         layout</button>
+      <hr style="width: 70%; margin: 10px auto;">
       <button id="clear-canvas" title="Clear all researchers and reset caches">Clear canvas</button>
     </div>
   </div>
@@ -111,17 +112,76 @@
       <span id="progress-text">Loading…</span>
     </div>
     <div id="empty-state" class="hidden">
-      <h1>Researcher Degrees of Separation</h1>
-      <p>How many hops of co-authorship, citation, or shared institution separate any two researchers?
-        Search for two names and find out.</p>
-      <button id="empty-example" type="button">Try an example: Geoffrey Hinton ↔ Noam Chomsky</button>
+      <!-- Decorative sample network drawn behind the prompt. Blurred + white-washed
+           (see #sample-graph / #sample-wash in style.css) so the copy stays legible;
+           it's purely illustrative, aria-hidden from assistive tech. -->
+      <svg id="sample-graph" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <g class="s-edges">
+          <line x1="500" y1="320" x2="250" y2="170" />
+          <line x1="250" y1="170" x2="120" y2="90" />
+          <line x1="250" y1="170" x2="110" y2="250" />
+          <line x1="250" y1="170" x2="300" y2="60" />
+          <line x1="250" y1="170" x2="380" y2="250" />
+          <line x1="500" y1="320" x2="380" y2="250" />
+          <line x1="500" y1="320" x2="620" y2="180" />
+          <line x1="620" y1="180" x2="760" y2="110" />
+          <line x1="620" y1="180" x2="880" y2="180" />
+          <line x1="620" y1="180" x2="720" y2="280" />
+          <line x1="500" y1="320" x2="760" y2="400" />
+          <line x1="760" y1="400" x2="890" y2="350" />
+          <line x1="760" y1="400" x2="900" y2="470" />
+          <line x1="760" y1="400" x2="820" y2="540" />
+          <line x1="500" y1="320" x2="360" y2="460" />
+          <line x1="360" y1="460" x2="200" y2="420" />
+          <line x1="360" y1="460" x2="230" y2="540" />
+          <line x1="360" y1="460" x2="420" y2="580" />
+          <line x1="500" y1="320" x2="560" y2="480" />
+          <line x1="560" y1="480" x2="610" y2="600" />
+          <line x1="110" y1="250" x2="60" y2="360" />
+          <line x1="720" y1="280" x2="820" y2="300" />
+          <line x1="380" y1="250" x2="300" y2="60" />
+        </g>
+        <g class="s-nodes">
+          <circle cx="250" cy="170" r="18" class="s-origin" />
+          <circle cx="760" cy="400" r="18" class="s-origin" />
+          <circle cx="500" cy="320" r="12" class="s-path" />
+          <circle cx="620" cy="180" r="11" class="s-path" />
+          <circle cx="360" cy="460" r="11" class="s-path" />
+          <circle cx="120" cy="90" r="7" class="s-neigh" />
+          <circle cx="110" cy="250" r="9" class="s-neigh" />
+          <circle cx="300" cy="60" r="8" class="s-neigh" />
+          <circle cx="380" cy="250" r="10" class="s-neigh" />
+          <circle cx="60" cy="360" r="6" class="s-neigh" />
+          <circle cx="760" cy="110" r="8" class="s-neigh" />
+          <circle cx="880" cy="180" r="7" class="s-neigh" />
+          <circle cx="720" cy="280" r="9" class="s-neigh" />
+          <circle cx="890" cy="350" r="7" class="s-neigh" />
+          <circle cx="900" cy="470" r="8" class="s-neigh" />
+          <circle cx="820" cy="540" r="6" class="s-neigh" />
+          <circle cx="200" cy="420" r="8" class="s-neigh" />
+          <circle cx="230" cy="540" r="7" class="s-neigh" />
+          <circle cx="420" cy="580" r="9" class="s-neigh" />
+          <circle cx="560" cy="480" r="8" class="s-neigh" />
+          <circle cx="610" cy="600" r="6" class="s-neigh" />
+          <rect x="812" y="292" width="16" height="16" class="s-work" transform="rotate(45 820 300)" />
+        </g>
+      </svg>
+      <div id="sample-wash"></div>
+      <div id="empty-state-content">
+        <h1>Researcher Degrees of Separation</h1>
+        <p>How many hops of co-authorship, citation, or shared institution separate any two researchers?
+          Search for two names and find out.</p>
+        <button id="empty-example" type="button">Try an example: Geoffrey Hinton ↔ Noam Chomsky</button>
+      </div>
     </div>
     <details id="graph-legend" class="hidden" open>
       <summary class="legend-title">Legend</summary>
       <div class="legend-row"><span class="legend-node" style="background:#f5821e"></span> Searched researcher</div>
-      <div class="legend-row"><span class="legend-node" style="background:#5badd9; width:9px; height:9px;"></span> On a shortest path</div>
+      <div class="legend-row"><span class="legend-node" style="background:#5badd9; width:9px; height:9px;"></span> On a
+        shortest path</div>
       <div class="legend-row"><span class="legend-node legend-diamond"></span> Work</div>
-      <div class="legend-row"><span class="legend-node" style="background:#9a9a9a"></span> Neighborhood · bigger &amp; darker = more works</div>
+      <div class="legend-row"><span class="legend-node" style="background:#9a9a9a"></span> Neighborhood · bigger &amp;
+        darker = more works</div>
       <div class="legend-row"><span class="legend-line legend-solid"></span> Co-authored</div>
       <div class="legend-row"><span class="legend-line legend-dashed"></span> Citation · arrow points to the cited</div>
       <div class="legend-row"><span class="legend-line legend-dotted"></span> Same institution</div>
