@@ -1,6 +1,7 @@
 import asyncio
 import json
 from unittest.mock import AsyncMock, patch
+import httpx
 from httpx import AsyncClient, ASGITransport
 from backend.app import app
 from backend.models import AuthorResult, WorkResult
@@ -59,6 +60,25 @@ async def test_search_authors_pagination_params():
     assert data["total_pages"] == 3
 
 
+async def test_search_authors_handles_openalex_rate_limit():
+    request = httpx.Request("GET", "https://api.openalex.org/authors")
+    response = httpx.Response(429, request=request)
+    exc = httpx.HTTPStatusError("rate limited", request=request, response=response)
+    cached_results = [
+        AuthorResult(id="A2", display_name="Cached Alice", institution=None, works_count=0)
+    ]
+    with patch("backend.app._client") as mock_client, patch("backend.app._local_index") as mock_index:
+        mock_client.search_authors = AsyncMock(side_effect=exc)
+        mock_index.search_authors.return_value = (cached_results, 1)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/api/authors?q=Alice")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["results"][0]["display_name"] == "Cached Alice"
+    assert data["total"] == 1
+    assert "cached local results" in data["message"]
+
+
 async def test_get_author_top_works_returns_results():
     mock_works = [
         {
@@ -81,6 +101,186 @@ async def test_get_author_top_works_returns_results():
     mock_client.get_author_works.assert_awaited_once_with("A1", limit=10)
 
 
+async def test_institution_rank_sorts_by_closest_path():
+    institution = {
+        "id": "I1", "display_name": "Duke University",
+        "country_code": "US", "works_count": 100, "cited_by_count": 1000,
+    }
+    target = AuthorResult(id="A9", display_name="David Chalmers", works_count=20)
+    candidates = [
+        {
+            "id": "https://openalex.org/A1", "display_name": "Close Scholar",
+            "works_count": 5, "cited_by_count": 20, "last_known_institutions": [
+                {"id": "https://openalex.org/I9", "display_name": "Other Primary"},
+                {"id": "https://openalex.org/I1", "display_name": "Duke University"},
+            ],
+            "affiliations": [{
+                "institution": {"id": "https://openalex.org/I1", "display_name": "Duke University"},
+                "years": [2025, 2023, 2024],
+            }],
+        },
+        {
+            "id": "https://openalex.org/A2", "display_name": "Far Scholar",
+            "works_count": 7, "cited_by_count": 500, "last_known_institutions": [
+                {"id": "https://openalex.org/I1", "display_name": "Duke University"},
+            ],
+        },
+        {
+            "id": "https://openalex.org/A9", "display_name": "David Chalmers",
+            "works_count": 20, "cited_by_count": 800, "last_known_institutions": [],
+        },
+    ]
+
+    async def mock_find_path(backend, source_id, source_name, target_id, target_name):
+        if source_id == "A1":
+            yield {
+                "type": "result", "found": True, "hops": 1,
+                "path": [
+                    {
+                        "author_id": "A1", "author_name": "Close Scholar",
+                        "connection_to_next": "coauthor", "label": "Paper", "direction": None,
+                    },
+                    {
+                        "author_id": "A9", "author_name": "David Chalmers",
+                        "connection_to_next": None, "label": None, "direction": None,
+                    },
+                ],
+            }
+        else:
+            yield {"type": "result", "found": False, "reason": "No path found"}
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app.OpenAlexBackend"):
+        mock_client.search_institutions = AsyncMock(return_value=([institution], 1))
+        mock_client.search_authors = AsyncMock(return_value=([target], 1))
+        mock_client.get_institution_authors = AsyncMock(return_value=candidates)
+        mock_client.get_author = AsyncMock(return_value={"display_name": "David Chalmers"})
+        mock_client.get_authors_batch = AsyncMock(return_value=[])
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/institution-rank?institution=Duke%20University&target=David%20Chalmers"
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["institution"]["display_name"] == "Duke University"
+    assert data["target"]["display_name"] == "David Chalmers"
+    assert data["primary_only"] is False
+    assert data["include_unconnected"] is False
+    assert data["searched_count"] == 2
+    assert data["unconnected_count"] == 1
+    assert [r["author"]["id"] for r in data["results"]] == ["A1"]
+    assert data["results"][0]["found"] is True
+    assert data["results"][0]["hops"] == 1
+    assert data["results"][0]["steps"][0]["label"] == "Paper"
+    assert data["results"][0]["matched_institution"] == "Duke University"
+    assert data["results"][0]["author"]["institution"] == "Other Primary"
+    assert data["results"][0]["author"]["openalex_url"] == "https://openalex.org/A1"
+    assert data["results"][0]["affiliation_evidence"] == {
+        "institution_id": "I1",
+        "display_name": "Duke University",
+        "years": [2025, 2024, 2023],
+        "openalex_url": "https://openalex.org/I1",
+    }
+    mock_client.get_institution_authors.assert_awaited_once_with(
+        "I1", limit=40, sort="cited_by_count:desc"
+    )
+
+
+async def test_institution_rank_primary_only_filters_non_primary_affiliations():
+    institution = {
+        "id": "I1", "display_name": "Duke University",
+        "country_code": "US", "works_count": 100, "cited_by_count": 1000,
+    }
+    target = AuthorResult(id="A9", display_name="David Chalmers", works_count=20)
+    candidates = [
+        {
+            "id": "https://openalex.org/A1", "display_name": "Former Duke Scholar",
+            "works_count": 5, "cited_by_count": 20, "last_known_institutions": [
+                {"id": "https://openalex.org/I9", "display_name": "Other Primary"},
+                {"id": "https://openalex.org/I1", "display_name": "Duke University"},
+            ],
+        },
+        {
+            "id": "https://openalex.org/A2", "display_name": "Current Duke Scholar",
+            "works_count": 7, "cited_by_count": 500, "last_known_institutions": [
+                {"id": "https://openalex.org/I1", "display_name": "Duke University"},
+            ],
+        },
+    ]
+
+    async def mock_find_path(backend, source_id, source_name, target_id, target_name):
+        yield {"type": "result", "found": False, "reason": "No path found"}
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app.OpenAlexBackend"):
+        mock_client.search_institutions = AsyncMock(return_value=([institution], 1))
+        mock_client.search_authors = AsyncMock(return_value=([target], 1))
+        mock_client.get_institution_authors = AsyncMock(return_value=candidates)
+        mock_client.get_author = AsyncMock(return_value={"display_name": "David Chalmers"})
+        mock_client.get_authors_batch = AsyncMock(return_value=[])
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/institution-rank?institution=Duke%20University"
+                "&target=David%20Chalmers&primary_only=true"
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["primary_only"] is True
+    assert data["searched_count"] == 1
+    assert data["unconnected_count"] == 1
+    assert data["results"] == []
+    mock_client.get_institution_authors.assert_awaited_once_with(
+        "I1", limit=200, sort="cited_by_count:desc"
+    )
+
+
+async def test_institution_rank_can_include_unconnected_results():
+    institution = {
+        "id": "I1", "display_name": "Duke University",
+        "country_code": "US", "works_count": 100, "cited_by_count": 1000,
+    }
+    target = AuthorResult(id="A9", display_name="David Chalmers", works_count=20)
+    candidates = [
+        {
+            "id": "https://openalex.org/A2", "display_name": "Far Scholar",
+            "works_count": 7, "cited_by_count": 500, "last_known_institutions": [
+                {"id": "https://openalex.org/I1", "display_name": "Duke University"},
+            ],
+        },
+    ]
+
+    async def mock_find_path(backend, source_id, source_name, target_id, target_name):
+        yield {"type": "result", "found": False, "reason": "No path found"}
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app.OpenAlexBackend"):
+        mock_client.search_institutions = AsyncMock(return_value=([institution], 1))
+        mock_client.search_authors = AsyncMock(return_value=([target], 1))
+        mock_client.get_institution_authors = AsyncMock(return_value=candidates)
+        mock_client.get_author = AsyncMock(return_value={"display_name": "David Chalmers"})
+        mock_client.get_authors_batch = AsyncMock(return_value=[])
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/institution-rank?institution=Duke%20University"
+                "&target=David%20Chalmers&include_unconnected=true"
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["include_unconnected"] is True
+    assert data["unconnected_count"] == 1
+    assert [r["author"]["id"] for r in data["results"]] == ["A2"]
+    assert data["results"][0]["found"] is False
+
+
 async def test_search_works_returns_results():
     mock_results = [WorkResult(id="W1", title="Paper One", author_names=["Alice"])]
     with patch("backend.app._client") as mock_client:
@@ -93,6 +293,26 @@ async def test_search_works_returns_results():
     assert data["results"][0]["author_names"] == ["Alice"]
     assert data["total"] == 1
     assert data["total_pages"] == 1
+
+
+async def test_search_institutions_returns_results():
+    mock_results = [{
+        "id": "I1",
+        "display_name": "Duke University",
+        "country_code": "US",
+        "works_count": 123,
+        "cited_by_count": 456,
+    }]
+    with patch("backend.app._client") as mock_client:
+        mock_client.search_institutions = AsyncMock(return_value=(mock_results, 1))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/api/institutions?q=Duke&page=2&per_page=20")
+    assert resp.status_code == 200
+    data = resp.json()
+    mock_client.search_institutions.assert_awaited_once_with("Duke", page=2, per_page=20)
+    assert data["results"][0]["display_name"] == "Duke University"
+    assert data["page"] == 2
+    assert data["total"] == 1
 
 
 async def test_graph_expand_emits_work_node_for_work_origin():
