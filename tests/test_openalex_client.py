@@ -110,24 +110,20 @@ async def test_get_author_works(api_key_file):
 
 
 @respx.mock
-async def test_retry_on_429(api_key_file):
+async def test_search_does_not_retry_on_429(api_key_file):
     call_count = 0
 
     def side_effect(request):
         nonlocal call_count
         call_count += 1
-        if call_count < 2:
-            return httpx.Response(429)
-        return httpx.Response(200, json={"results": []})
+        return httpx.Response(429)
 
     respx.get("https://api.openalex.org/authors").mock(side_effect=side_effect)
     client = OpenAlexClient(api_key_path=api_key_file)
-    import unittest.mock as mock
-    with mock.patch("asyncio.sleep"):
-        results, total = await client.search_authors("test")
-    assert call_count == 2
-    assert results == []
-    assert total == 0
+    import pytest
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.search_authors("test")
+    assert call_count == 1
 
 
 @respx.mock
