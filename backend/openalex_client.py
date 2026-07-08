@@ -37,11 +37,12 @@ class OpenAlexClient:
         # We still send a descriptive User-Agent / mailto as a courtesy identifier.
         # Configure via OPENALEX_MAILTO env var or a "mailto" entry in api-keys.json.
         self._mailto = os.environ.get("OPENALEX_MAILTO") or keys.get("mailto", "") or ""
-        # Bounds in-flight requests (concurrency, not req/s) so bursts stay
-        # modest under OpenAlex's credit-based rate limiting; the 429
-        # retry-with-backoff in _get() is the safety valve when we still
-        # overrun the limit.
-        self._semaphore = asyncio.Semaphore(10)
+        # Cap on concurrent OpenAlex requests. Each BFS level fans out many chunked
+        # requests via asyncio.gather; too small a gate serializes them. Configurable
+        # via OPENALEX_CONCURRENCY; otherwise key-aware (a key raises the daily budget,
+        # so we can push more in flight — keyless stays conservative). The 429 retry
+        # in _get absorbs the higher burst.
+        self._semaphore = asyncio.Semaphore(self._concurrency_limit())
         # One shared client → connection pooling / keep-alive across the many calls
         # a single BFS makes. Created lazily so it binds to the running event loop.
         self._http: httpx.AsyncClient | None = None
@@ -50,6 +51,20 @@ class OpenAlexClient:
         # fine because citation counts drift slowly.
         self._author_cache: "OrderedDict[str, dict]" = OrderedDict()
         self._author_cache_max = 50_000
+
+    def _concurrency_limit(self) -> int:
+        """Max concurrent OpenAlex requests. OPENALEX_CONCURRENCY overrides; else
+        key-aware (15 with a key, 8 keyless)."""
+        default = 15 if self._api_key else 8
+        raw = os.environ.get("OPENALEX_CONCURRENCY")
+        if raw:
+            try:
+                value = int(raw)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+        return default
 
     def _user_agent(self) -> str:
         ua = "researcher-degree-of-separation/1.0"
