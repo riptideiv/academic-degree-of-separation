@@ -35,12 +35,40 @@
           <div class="section-label">Degrees of separation</div>
           <ul id="degrees-list"></ul>
         </div>
+
+        <div id="institution-rank-panel">
+          <div class="section-label">Rank by institution</div>
+          <form id="rank-search-form">
+            <div id="rank-institution-wrapper">
+              <input type="text" id="rank-institution-input" placeholder="Institution…" autocomplete="off">
+              <button class="smooth-button" id="rank-institution-search" type="button">Search</button>
+            </div>
+            <div id="rank-target-wrapper">
+              <input type="text" id="rank-target-input" placeholder="Closest to…" autocomplete="off">
+              <button class="smooth-button" id="rank-target-search" type="button">Search</button>
+            </div>
+            <label id="rank-primary-wrapper">
+              <input type="checkbox" id="rank-primary-only">
+              Current primary affiliation only
+            </label>
+            <button class="smooth-button" id="rank-btn" type="submit">Rank academics</button>
+          </form>
+          <div id="rank-status"></div>
+          <ul id="rank-results"></ul>
+        </div>
       </div>
     </details>
 
     <details class="side-card" id="sec-options" open>
       <summary>Search options</summary>
       <div class="side-card-body">
+        <div class="section-label">OpenAlex API</div>
+        <div id="openalex-key-row">
+          <input type="password" id="openalex-key-input" placeholder="API key…" autocomplete="off">
+          <button class="smooth-button" id="openalex-key-save" type="button">Save</button>
+        </div>
+        <div id="openalex-key-status"></div>
+
         <div class="section-label">Edge types</div>
         <div id="edge-toggles">
           <label><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>

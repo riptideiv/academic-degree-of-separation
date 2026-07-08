@@ -16,6 +16,7 @@ class PaginatedAuthors(BaseModel):
     per_page: int
     total: int
     total_pages: int
+    message: str | None = None
 
 
 class AuthorWork(BaseModel):
@@ -41,6 +42,7 @@ class PaginatedWorks(BaseModel):
     per_page: int
     total: int
     total_pages: int
+    message: str | None = None
 
 
 class Connection(BaseModel):
@@ -52,5 +54,4 @@ class Connection(BaseModel):
     # dict-key author cites target_author_id, "incoming" means the reverse,
     # "mutual" means both directions hold between the pair.
     direction: Literal["incoming", "outgoing", "mutual"] | None = None
-
 
