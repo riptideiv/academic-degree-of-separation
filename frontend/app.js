@@ -19,6 +19,7 @@
 
   // Base per-type edge opacity (multiplied by a distance factor in applyEdgeFade).
   const EDGE_TYPE_OPACITY = { coauthor: 0.65, citation: 0.5, institution: 0.4, authorship: 0.6 };
+  const OPENALEX_KEY_STORAGE = 'researcherOpenAlexKey';
 
   // OpenAlex IDs are prefix-typed: works start with 'W', authors with 'A'.
   function isWorkId(id) {
@@ -329,6 +330,19 @@
   const searchBtn = document.getElementById('search-btn');
   const workSearchInput = document.getElementById('work-search-input');
   const workSearchBtn = document.getElementById('work-search-btn');
+  const rankSearchForm = document.getElementById('rank-search-form');
+  const rankInstitutionInput = document.getElementById('rank-institution-input');
+  const rankInstitutionSearch = document.getElementById('rank-institution-search');
+  const rankTargetInput = document.getElementById('rank-target-input');
+  const rankTargetSearch = document.getElementById('rank-target-search');
+  const rankPrimaryOnly = document.getElementById('rank-primary-only');
+  const openAlexKeyInput = document.getElementById('openalex-key-input');
+  const openAlexKeySave = document.getElementById('openalex-key-save');
+  const openAlexKeyStatus = document.getElementById('openalex-key-status');
+  const rankSelection = {
+    institution: null,
+    target: null,
+  };
 
   // State for the currently open (or last opened) search modal session. Page and
   // per-author-top-papers results are cached here so revisiting a page, or
@@ -336,7 +350,7 @@
   // network calls. The cache is cleared only when the user commits to an item
   // via "Add" — see onAddFromModal — or when the query/entity type changes.
   const searchSession = {
-    entityType: 'author',   // 'author' | 'work'
+    entityType: 'author',   // 'author' | 'work' | 'rank-institution' | 'rank-target'
     query: '',
     pageCache: new Map(),    // page number -> PaginatedAuthors/PaginatedWorks response
     topWorksCache: new Map(), // author id -> AuthorWork[] (author-only "top papers" panel)
@@ -351,6 +365,91 @@
   workSearchInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') runSearch('work', workSearchInput);
   });
+  rankInstitutionSearch?.addEventListener('click', () => runSearch('rank-institution', rankInstitutionInput));
+  rankTargetSearch?.addEventListener('click', () => runSearch('rank-target', rankTargetInput));
+  openAlexKeySave?.addEventListener('click', saveOpenAlexKey);
+  openAlexKeyInput?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveOpenAlexKey();
+    }
+  });
+  configureStoredOpenAlexKey();
+  rankSearchForm?.addEventListener('submit', e => {
+    e.preventDefault();
+    runInstitutionRank();
+  });
+  [rankInstitutionInput, rankTargetInput].forEach(input => {
+    input?.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      runSearch(input === rankInstitutionInput ? 'rank-institution' : 'rank-target', input);
+    });
+  });
+  rankInstitutionInput?.addEventListener('input', () => {
+    if (rankSelection.institution?.display_name !== rankInstitutionInput.value.trim()) {
+      rankSelection.institution = null;
+      renderRankResults([]);
+      renderRankSelectionStatus();
+    }
+  });
+  rankTargetInput?.addEventListener('input', () => {
+    if (rankSelection.target?.display_name !== rankTargetInput.value.trim()) {
+      rankSelection.target = null;
+      renderRankResults([]);
+      renderRankSelectionStatus();
+    }
+  });
+
+  async function configureStoredOpenAlexKey() {
+    const saved = localStorage.getItem(OPENALEX_KEY_STORAGE);
+    if (saved && openAlexKeyInput) {
+      openAlexKeyInput.value = saved;
+      await sendOpenAlexKey(saved, false);
+      return;
+    }
+    try {
+      const r = await fetch(`${API_BASE}/api/openalex-key`);
+      if (!r.ok) return;
+      const data = await r.json();
+      setOpenAlexKeyStatus(data.configured ? 'API key active' : 'Add API key for live search');
+    } catch {
+      setOpenAlexKeyStatus('');
+    }
+  }
+
+  async function saveOpenAlexKey() {
+    const key = openAlexKeyInput?.value.trim() || '';
+    if (!key) {
+      setOpenAlexKeyStatus('Paste your OpenAlex API key');
+      openAlexKeyInput?.focus();
+      return;
+    }
+    localStorage.setItem(OPENALEX_KEY_STORAGE, key);
+    await sendOpenAlexKey(key, true);
+  }
+
+  async function sendOpenAlexKey(key, showSaved) {
+    setOpenAlexKeyStatus('Checking key…');
+    try {
+      const r = await fetch(`${API_BASE}/api/openalex-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key }),
+      });
+      if (!r.ok) throw new Error('key failed');
+      const data = await r.json();
+      if (!data.configured) throw new Error('key missing');
+      searchSession.pageCache.clear();
+      setOpenAlexKeyStatus(showSaved ? 'API key saved' : 'API key active');
+    } catch {
+      setOpenAlexKeyStatus('Could not save API key');
+    }
+  }
+
+  function setOpenAlexKeyStatus(message) {
+    if (openAlexKeyStatus) openAlexKeyStatus.textContent = message || '';
+  }
 
   function runSearch(entityType, inputEl) {
     const q = inputEl.value.trim();
@@ -362,7 +461,14 @@
       searchSession.entityType = entityType;
     }
     const title = document.getElementById('search-title');
-    if (title) title.textContent = entityType === 'work' ? 'Search results — works' : 'Search results — researchers';
+    if (title) {
+      title.textContent = {
+        work: 'Search results — works',
+        'rank-institution': 'Search results — institutions',
+        'rank-target': 'Search results — target academic',
+        author: 'Search results — researchers',
+      }[entityType] || 'Search results';
+    }
     openSearchModal();
     loadPage(1);
   }
@@ -431,7 +537,11 @@
 
   // ── Search modal (shared by both author and work search) ──────────────────
   async function fetchResultsPage(q, page) {
-    const endpoint = searchSession.entityType === 'work' ? 'works' : 'authors';
+    const endpoint = searchSession.entityType === 'work'
+      ? 'works'
+      : searchSession.entityType === 'rank-institution'
+        ? 'institutions'
+        : 'authors';
     const r = await fetch(`${API_BASE}/api/${endpoint}?q=${encodeURIComponent(q)}&page=${page}&per_page=20`);
     if (!r.ok) throw new Error('search failed');
     return r.json();
@@ -447,6 +557,10 @@
     try {
       const data = await fetchResultsPage(searchSession.query, page);
       searchSession.pageCache.set(page, data);
+      if (data.message && !(data.results || []).length) {
+        renderSearchListMessage(data.message);
+        return;
+      }
       renderResultsList(data);
     } catch {
       renderSearchListMessage('Search failed. Please try again.');
@@ -462,27 +576,35 @@
   function renderResultsList(data) {
     const list = document.getElementById('search-results-list');
     list.innerHTML = '';
-    const candidates = data.results.filter(item => !state.origins.has(item.id));
+    const isWork = searchSession.entityType === 'work';
+    const isRankInstitution = searchSession.entityType === 'rank-institution';
+    const isRankTarget = searchSession.entityType === 'rank-target';
+    const candidates = (isRankInstitution || isRankTarget)
+      ? data.results
+      : data.results.filter(item => !state.origins.has(item.id));
     if (!candidates.length) {
       list.innerHTML = '<li class="empty-state">No results.</li>';
     }
-    const isWork = searchSession.entityType === 'work';
     for (const item of candidates) {
       const li = document.createElement('li');
       li.className = 'result-row';
       li.dataset.id = item.id;
-      const infoHtml = isWork
+      const infoHtml = isRankInstitution
+        ? `<strong>${escHtml(item.display_name)}</strong><br>` +
+        `<small>${escHtml(item.country_code || 'Unknown country')} · ` +
+        `${(item.works_count || 0).toLocaleString()} works · ${(item.cited_by_count || 0).toLocaleString()} citations</small>`
+        : isWork
         ? `<strong>${escHtml(item.title)}</strong><br>` +
         `<small>${escHtml(item.author_names.join(', ') || 'Unknown authors')} · ` +
         `${item.publication_year || '—'} · ${item.cited_by_count.toLocaleString()} citations</small>`
         : `<strong>${escHtml(item.display_name)}</strong><br>` +
         `<small>${escHtml(item.institution || 'Unknown institution')} · ` +
         `${item.works_count.toLocaleString()} works · ${item.cited_by_count.toLocaleString()} citations</small>`;
-      const arrowHtml = isWork ? '' : '<span class="result-arrow">&#9660;</span> ';
+      const arrowHtml = (isWork || isRankInstitution) ? '' : '<span class="result-arrow">&#9660;</span> ';
       li.innerHTML =
         `<div class="result-row-main">` +
         `<div class="result-row-info">${arrowHtml}${infoHtml}</div>` +
-        `<button type="button" class="add-btn-inline">Add</button>` +
+        `<button type="button" class="add-btn-inline">${isRankInstitution || isRankTarget ? 'Select' : 'Add'}</button>` +
         `</div>`;
       li.querySelector('.add-btn-inline').addEventListener('click', e => {
         e.stopPropagation();
@@ -490,7 +612,7 @@
       });
       // Works show everything (incl. authors) directly on the tile already, so
       // there's no expand-in-place panel for them — only authors get one (top papers).
-      if (!isWork) {
+      if (!isWork && !isRankInstitution) {
         li.querySelector('.result-row-info').addEventListener('click', () => toggleAuthorExpand(item, li));
       }
       list.appendChild(li);
@@ -541,6 +663,167 @@
     arrow?.classList.add('expanded');
   }
 
+  async function toggleRankExpand(result, el) {
+    const arrow = el.querySelector('.rank-arrow');
+    const existingDetail = el.nextElementSibling;
+    if (existingDetail && existingDetail.classList.contains('rank-steps')) {
+      existingDetail.remove();
+      arrow?.classList.remove('expanded');
+      return;
+    }
+
+    const detail = document.createElement('ol');
+    detail.className = 'rank-steps';
+    const evidence = result.affiliation_evidence;
+    if (result.author.openalex_url) {
+      detail.innerHTML +=
+        `<li><span class="step-people">Author profile</span>` +
+        `<span class="step-via"><a href="${escAttr(result.author.openalex_url)}" target="_blank" rel="noopener">OpenAlex profile</a></span></li>`;
+    }
+    if (evidence) {
+      const years = evidence.years?.length ? evidence.years.join(', ') : 'years not listed';
+      const evidenceLabel = evidence.openalex_url
+        ? `<a href="${escAttr(evidence.openalex_url)}" target="_blank" rel="noopener">${escHtml(evidence.display_name || result.matched_institution)}</a>`
+        : escHtml(evidence.display_name || result.matched_institution);
+      detail.innerHTML +=
+        `<li><span class="step-people">Affiliation evidence</span>` +
+        `<span class="step-via">${evidenceLabel} · ${escHtml(years)}</span></li>`;
+    }
+    if (!result.steps.length) {
+      detail.innerHTML += '<li>No path details available.</li>';
+    } else {
+      detail.innerHTML += result.steps.map(s =>
+        `<li><span class="step-people">${escHtml(s.from_name)} → ${escHtml(s.to_name)}</span>` +
+        `<span class="step-via">${escHtml(stepPhrase(s))}</span></li>`
+      ).join('');
+    }
+    el.after(detail);
+    arrow?.classList.add('expanded');
+  }
+
+  async function runInstitutionRank() {
+    if (state.isLoading) return;
+    if (!rankSelection.institution && !rankSelection.target) {
+      setRankStatus('Search and select an institution and a target academic.');
+      return;
+    }
+    if (!rankSelection.institution) {
+      setRankStatus('Search and select an institution.');
+      rankInstitutionInput?.focus();
+      return;
+    }
+    if (!rankSelection.target) {
+      setRankStatus('Search and select a target academic.');
+      rankTargetInput?.focus();
+      return;
+    }
+
+    setRankStatus('Ranking…');
+    renderRankResults([]);
+    try {
+      const params = new URLSearchParams({
+        institution: rankSelection.institution.display_name,
+        target: rankSelection.target.display_name,
+        institution_id: rankSelection.institution.id,
+        target_id: rankSelection.target.id,
+        limit: '15',
+        candidate_pool: '40',
+        primary_only: rankPrimaryOnly?.checked ? 'true' : 'false',
+      });
+      getEnabledEdges().forEach(e => params.append('edges', e));
+      const r = await fetch(`${API_BASE}/api/institution-rank?${params}`);
+      if (!r.ok) throw new Error('ranking failed');
+      const data = await r.json();
+      if (data.message && !(data.results || []).length) {
+        setRankStatus(data.message);
+        return;
+      }
+      const inst = data.institution?.display_name || rankSelection.institution.display_name;
+      const targetName = data.target?.display_name || rankSelection.target.display_name;
+      const scope = data.primary_only ? 'current primary academics' : 'academics';
+      const omitted = data.unconnected_count || 0;
+      const omittedNote = omitted ? ` · ${omitted} candidate${omitted === 1 ? '' : 's'} omitted with no path found` : '';
+      const cacheNote = data.message ? ' · using cached local data' : '';
+      setRankStatus(`${inst} ${scope} closest to ${targetName}${omittedNote}${cacheNote}`);
+      renderRankResults(data.results || []);
+    } catch {
+      setRankStatus('Ranking failed. Please try again.');
+    }
+  }
+
+  function setRankStatus(message) {
+    const status = document.getElementById('rank-status');
+    if (status) status.textContent = message || '';
+  }
+
+  function renderRankSelectionStatus() {
+    const parts = [];
+    if (rankSelection.institution) parts.push(`Institution: ${rankSelection.institution.display_name}`);
+    if (rankSelection.target) parts.push(`Target: ${rankSelection.target.display_name}`);
+    setRankStatus(parts.join(' · '));
+  }
+
+  function rankLabel(result) {
+    if (!result.found) return 'no path found';
+    return `${result.hops} degree${result.hops === 1 ? '' : 's'}`;
+  }
+
+  function renderRankResults(results) {
+    const list = document.getElementById('rank-results');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!results.length) return;
+    results.forEach((result, index) => {
+      const li = document.createElement('li');
+      li.className = 'rank-result';
+      const author = result.author;
+      const matchedInstitution = result.matched_institution || author.institution || 'Selected institution';
+      const primaryInstitution = author.institution || 'Unknown primary affiliation';
+      const primaryNote = primaryInstitution && primaryInstitution !== matchedInstitution
+        ? ` · Primary: ${primaryInstitution}`
+        : '';
+      li.innerHTML =
+        `<div class="rank-row">` +
+        `<span class="rank-num">${index + 1}</span>` +
+        `<button type="button" class="rank-main">` +
+        `<strong>${escHtml(author.display_name)}</strong>` +
+        `<small>${escHtml(matchedInstitution)}${escHtml(primaryNote)} · ` +
+        `${author.cited_by_count.toLocaleString()} citations</small>` +
+        `</button>` +
+        `<span class="rank-distance"><span class="rank-arrow">&#9660;</span> ${escHtml(rankLabel(result))}</span>` +
+        `<button type="button" class="rank-graph-btn">Graph</button>` +
+        `</div>`;
+      li.querySelector('.rank-main').addEventListener('click', () => toggleRankExpand(result, li));
+      li.querySelector('.rank-distance').addEventListener('click', () => toggleRankExpand(result, li));
+      li.querySelector('.rank-graph-btn').addEventListener('click', () => graphRankResult(result));
+      list.appendChild(li);
+    });
+  }
+
+  async function graphRankResult(result) {
+    if (state.isLoading || !rankSelection.target) return;
+    const target = rankSelection.target;
+    const author = result.author;
+    if (!state.origins.has(target.id)) {
+      await addResearcher({
+        id: target.id,
+        display_name: target.display_name,
+        institution: target.institution,
+        works_count: target.works_count || 0,
+        cited_by_count: target.cited_by_count || 0,
+      });
+    }
+    if (!state.origins.has(author.id)) {
+      await addResearcher({
+        id: author.id,
+        display_name: author.display_name,
+        institution: author.institution,
+        works_count: author.works_count || 0,
+        cited_by_count: author.cited_by_count || 0,
+      });
+    }
+  }
+
   // Renders the top-papers table: numbered + sorted by citation count (the
   // backend already sorts this way; re-sorting here is a cheap safety net),
   // each title linked to its DOI when the API provided one.
@@ -567,7 +850,15 @@
   }
 
   function onAddFromModal(item) {
-    if (searchSession.entityType === 'work') addWork(item);
+    if (searchSession.entityType === 'rank-institution') {
+      rankSelection.institution = item;
+      rankInstitutionInput.value = item.display_name;
+      renderRankSelectionStatus();
+    } else if (searchSession.entityType === 'rank-target') {
+      rankSelection.target = item;
+      rankTargetInput.value = item.display_name;
+      renderRankSelectionStatus();
+    } else if (searchSession.entityType === 'work') addWork(item);
     else addResearcher(item);
     searchSession.pageCache.clear();
     searchSession.topWorksCache.clear();
@@ -977,7 +1268,9 @@
     // Chip remove buttons (created dynamically, so query each time)
     document.querySelectorAll('.chip-remove').forEach(btn => { btn.disabled = loading; });
     // Dim the search inputs/buttons so it's clear adding is blocked
-    ['search-input', 'search-btn', 'work-search-input', 'work-search-btn'].forEach(id => {
+    ['search-input', 'search-btn', 'work-search-input', 'work-search-btn',
+      'rank-institution-input', 'rank-institution-search',
+      'rank-target-input', 'rank-target-search', 'rank-primary-only', 'rank-btn'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = loading;
     });

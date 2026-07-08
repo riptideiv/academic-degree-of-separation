@@ -6,6 +6,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 
 # Load local env vars (e.g. SUPABASE_DB_URL) from .env.local so local runs mirror
@@ -16,10 +17,12 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from backend.bfs import find_path
 from backend.graph_backend import ALL_EDGE_TYPES, ALL_WORK_EDGE_TYPES, OpenAlexBackend, _is_work_id
-from backend.models import AuthorWork, PaginatedAuthors, PaginatedWorks
+from backend.local_cache_index import LocalCacheIndex
+from backend.models import AuthorResult, AuthorWork, PaginatedAuthors, PaginatedWorks
 from backend.neighbor_store import (
     JsonNeighborStore,
     NeighborCache,
@@ -35,7 +38,7 @@ app = FastAPI(title="Researcher Degree of Separation")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "DELETE"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -55,6 +58,7 @@ _BACKEND = os.environ.get("BACKEND", "openalex")
 
 _CACHE_FILE = Path(__file__).parent.parent / "neighbor_cache.json"
 _CACHE_MAX = int(os.environ.get("NEIGHBOR_CACHE_MAX", "10000"))
+_local_index = LocalCacheIndex(_CACHE_FILE)
 
 
 def _make_store() -> NeighborStore:
@@ -66,6 +70,10 @@ def _make_store() -> NeighborStore:
 
 _store: NeighborStore = _make_store()
 _cache = NeighborCache(_store, max_size=_CACHE_MAX)
+
+
+class OpenAlexKeyPayload(BaseModel):
+    api_key: str
 
 
 @asynccontextmanager
@@ -101,6 +109,46 @@ def _get_inst(author: dict) -> str | None:
     return insts[0].get("display_name") if insts else None
 
 
+def _get_matching_inst(author: dict, institution_id: str, fallback_name: str) -> str:
+    for inst in author.get("last_known_institutions", []) or []:
+        if inst.get("id") and _short_id(inst["id"]) == institution_id:
+            return inst.get("display_name") or fallback_name
+    return fallback_name
+
+
+def _has_primary_inst(author: dict, institution_id: str) -> bool:
+    insts = author.get("last_known_institutions", []) or []
+    return bool(insts and insts[0].get("id") and _short_id(insts[0]["id"]) == institution_id)
+
+
+def _affiliation_evidence(author: dict, institution_id: str) -> dict | None:
+    for aff in author.get("affiliations", []) or []:
+        inst = aff.get("institution") or {}
+        if inst.get("id") and _short_id(inst["id"]) == institution_id:
+            return {
+                "institution_id": institution_id,
+                "display_name": inst.get("display_name"),
+                "years": sorted(aff.get("years") or [], reverse=True),
+                "openalex_url": f"https://openalex.org/{institution_id}",
+            }
+    return None
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+
+
+def _rate_limit_message() -> str:
+    if not _client.has_api_key:
+        return (
+            "Live OpenAlex search is unavailable because this local app is not "
+            "configured with your OpenAlex API key. Showing cached local results when available."
+        )
+    return (
+        "OpenAlex returned a live-search limit response. Showing cached local results when available."
+    )
+
+
 async def _collect_path(
     backend: OpenAlexBackend,
     from_id: str,
@@ -117,7 +165,12 @@ async def _collect_path(
         to_obj = await _client.get_work(to_id)
         to_name = to_obj.get("title", to_id)
     else:
-        to_obj = await _client.get_author(to_id)
+        try:
+            to_obj = await _client.get_author(to_id)
+        except Exception as exc:
+            if not _is_rate_limited(exc):
+                raise
+            to_obj = _local_index.author_record(to_id)
         to_name = to_obj.get("display_name", to_id)
 
     nodes: list[dict] = []
@@ -171,7 +224,16 @@ async def _collect_path(
     # via get_work, reusing the to_id fetch already done above where possible.
     author_node_ids = [n["id"] for n in nodes if n["type"] != "work"]
     if author_node_ids:
-        authors = await _client.get_authors_batch(author_node_ids)
+        try:
+            authors = await _client.get_authors_batch(author_node_ids)
+        except Exception as exc:
+            if not _is_rate_limited(exc):
+                raise
+            authors = [
+                _local_index.author_record(n["id"], n["name"])
+                for n in nodes
+                if n["type"] != "work"
+            ]
         meta = {_short_id(a["id"]): a for a in authors}
         for n in nodes:
             a = meta.get(n["id"])
@@ -210,13 +272,35 @@ async def health():
     return {"status": "ok", "store": store}
 
 
+@app.get("/api/openalex-key")
+async def openalex_key_status():
+    return {"configured": _client.has_api_key}
+
+
+@app.post("/api/openalex-key")
+async def set_openalex_key(payload: OpenAlexKeyPayload):
+    _client.set_api_key(payload.api_key)
+    return {"configured": _client.has_api_key}
+
+
 @app.get("/api/authors", response_model=PaginatedAuthors)
 async def search_authors(
     q: str = Query(..., min_length=2),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=50),
 ):
-    results, total = await _client.search_authors(q, page=page, per_page=per_page)
+    try:
+        results, total = await _client.search_authors(q, page=page, per_page=per_page)
+    except Exception as exc:
+        if _is_rate_limited(exc):
+            results, total = _local_index.search_authors(q, page=page, per_page=per_page)
+            total_pages = max(1, math.ceil(total / per_page))
+            return PaginatedAuthors(
+                results=results, page=page, per_page=per_page,
+                total=total, total_pages=total_pages,
+                message=_rate_limit_message(),
+            )
+        raise
     total_pages = max(1, math.ceil(total / per_page))
     return PaginatedAuthors(
         results=results, page=page, per_page=per_page,
@@ -230,12 +314,193 @@ async def search_works(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=50),
 ):
-    results, total = await _client.search_works(q, page=page, per_page=per_page)
+    try:
+        results, total = await _client.search_works(q, page=page, per_page=per_page)
+    except Exception as exc:
+        if _is_rate_limited(exc):
+            return PaginatedWorks(
+                results=[], page=page, per_page=per_page,
+                total=0, total_pages=1,
+            ).model_dump() | {"message": _rate_limit_message()}
+        raise
     total_pages = max(1, math.ceil(total / per_page))
     return PaginatedWorks(
         results=results, page=page, per_page=per_page,
         total=total, total_pages=total_pages,
     )
+
+
+@app.get("/api/institutions")
+async def search_institutions(
+    q: str = Query(..., min_length=2),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=50),
+):
+    try:
+        results, total = await _client.search_institutions(q, page=page, per_page=per_page)
+    except Exception as exc:
+        if _is_rate_limited(exc):
+            results, total = _local_index.search_institutions(q, page=page, per_page=per_page)
+            total_pages = max(1, math.ceil(total / per_page))
+            return {
+                "results": results,
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "total_pages": total_pages,
+                "message": _rate_limit_message(),
+            }
+        raise
+    total_pages = max(1, math.ceil(total / per_page))
+    return {
+        "results": results,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+    }
+
+
+@app.get("/api/institution-rank")
+async def institution_rank(
+    institution: str | None = Query(default=None, min_length=2),
+    target: str | None = Query(default=None, min_length=2),
+    institution_id: str | None = Query(default=None),
+    target_id: str | None = Query(default=None),
+    limit: int = Query(default=15, ge=1, le=30),
+    candidate_pool: int = Query(default=40, ge=1, le=75),
+    primary_only: bool = Query(default=False),
+    include_unconnected: bool = Query(default=False),
+    edges: list[str] = Query(default=list(ALL_EDGE_TYPES)),
+):
+    """Rank institution-affiliated authors by shortest path to a target author."""
+    if institution_id:
+        inst = {
+            "id": institution_id,
+            "display_name": institution or institution_id,
+            "country_code": None,
+            "works_count": 0,
+            "cited_by_count": 0,
+        }
+    else:
+        if not institution:
+            return {"institution": None, "target": None, "results": [], "message": "Select an institution."}
+        try:
+            institution_results, _ = await _client.search_institutions(institution, page=1, per_page=1)
+        except Exception as exc:
+            if not _is_rate_limited(exc):
+                raise
+            institution_results, _ = _local_index.search_institutions(institution, page=1, per_page=1)
+        if not institution_results:
+            return {
+                "institution": None,
+                "target": None,
+                "results": [],
+                "message": f"No institution found for {institution!r}",
+            }
+        inst = institution_results[0]
+
+    if target_id:
+        try:
+            target_obj = await _client.get_author(target_id)
+        except Exception as exc:
+            if not _is_rate_limited(exc):
+                raise
+            target_obj = _local_index.author_record(target_id, target)
+        target_author = AuthorResult(
+            id=target_id,
+            display_name=target_obj.get("display_name", target or target_id),
+            institution=_get_inst(target_obj),
+            works_count=target_obj.get("works_count", 0),
+            cited_by_count=target_obj.get("cited_by_count", 0),
+        )
+    else:
+        if not target:
+            return {"institution": inst, "target": None, "results": [], "message": "Select a target academic."}
+        try:
+            target_results, _ = await _client.search_authors(target, page=1, per_page=1)
+        except Exception as exc:
+            if not _is_rate_limited(exc):
+                raise
+            target_results, _ = _local_index.search_authors(target, page=1, per_page=1)
+        if not target_results:
+            return {
+                "institution": inst,
+                "target": None,
+                "results": [],
+                "message": f"No target author found for {target!r}",
+            }
+        target_author = target_results[0]
+
+    edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
+    backend = _make_backend(edge_types)
+    fetch_limit = min(1000, max(candidate_pool, 200 if primary_only else candidate_pool))
+    try:
+        candidates = await _client.get_institution_authors(
+            inst["id"], limit=fetch_limit, sort="cited_by_count:desc"
+        )
+        candidate_source_message = None
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            candidates = _local_index.institution_authors(
+                inst["id"], inst.get("display_name"), limit=fetch_limit
+            )
+            candidate_source_message = _rate_limit_message()
+        else:
+            raise
+    if primary_only:
+        candidates = [a for a in candidates if _has_primary_inst(a, inst["id"])]
+    candidates = candidates[:candidate_pool]
+
+    async def rank_candidate(author: dict) -> dict:
+        author_id = _short_id(author["id"])
+        author_name = author.get("display_name", author_id)
+        result = await _collect_path(
+            backend, author_id, author_name, target_author.id
+        )
+        return {
+            "matched_institution": _get_matching_inst(author, inst["id"], inst["display_name"]),
+            "affiliation_evidence": _affiliation_evidence(author, inst["id"]),
+            "author": {
+                "id": author_id,
+                "display_name": author_name,
+                "institution": _get_inst(author),
+                "works_count": author.get("works_count", 0),
+                "cited_by_count": author.get("cited_by_count", 0),
+                "openalex_url": f"https://openalex.org/{author_id}",
+            },
+            "found": result["found"],
+            "hops": result["hops"],
+            "steps": result["steps"],
+        }
+
+    ranked_results = await asyncio.gather(*[
+        rank_candidate(a)
+        for a in candidates
+        if _short_id(a["id"]) != target_author.id
+    ], return_exceptions=True)
+    ranked = [r for r in ranked_results if not isinstance(r, Exception)]
+    ranked.sort(key=lambda r: (
+        r["hops"] is None,
+        r["hops"] if r["hops"] is not None else 999,
+        -r["author"]["cited_by_count"],
+        r["author"]["display_name"].casefold(),
+    ))
+    visible = ranked if include_unconnected else [r for r in ranked if r["found"]]
+    unconnected_count = sum(1 for r in ranked if not r["found"])
+
+    response = {
+        "institution": inst,
+        "target": target_author.model_dump(),
+        "primary_only": primary_only,
+        "include_unconnected": include_unconnected,
+        "searched_count": len(ranked),
+        "unconnected_count": unconnected_count,
+        "results": visible[:limit],
+    }
+    if candidate_source_message:
+        response["message"] = candidate_source_message
+    return response
 
 
 @app.get("/api/authors/{author_id}/works", response_model=list[AuthorWork])
