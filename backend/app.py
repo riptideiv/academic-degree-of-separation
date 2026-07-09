@@ -13,11 +13,10 @@ from dotenv import load_dotenv
 # Render. override=False means real environment vars (Render's) always win.
 load_dotenv(Path(__file__).parent.parent / ".env.local", override=False)
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from backend.bfs import find_path
 from backend.graph_backend import ALL_EDGE_TYPES, ALL_WORK_EDGE_TYPES, OpenAlexBackend, _is_work_id
@@ -72,8 +71,12 @@ _store: NeighborStore = _make_store()
 _cache = NeighborCache(_store, max_size=_CACHE_MAX)
 
 
-class OpenAlexKeyPayload(BaseModel):
-    api_key: str
+RANK_EFFECTIVE_POOL_MAX = 15
+RANK_FETCH_LIMIT_MAX = 80
+RANK_TOTAL_TIMEOUT_S = 28
+RANK_CANDIDATE_TIMEOUT_S = 8
+RANK_CONCURRENCY = 4
+RANK_MAX_DEPTH = 4
 
 
 @asynccontextmanager
@@ -154,6 +157,7 @@ async def _collect_path(
     from_id: str,
     from_name: str,
     to_id: str,
+    max_depth: int = 6,
 ) -> dict:
     """Run bidirectional BFS; return the found path's nodes/edges plus hop count.
 
@@ -179,7 +183,7 @@ async def _collect_path(
     found = False
     hops: int | None = None
 
-    async for event in find_path(backend, from_id, from_name, to_id, to_name):
+    async for event in find_path(backend, from_id, from_name, to_id, to_name, max_depth=max_depth):
         if event.get("type") == "result" and event.get("found"):
             found = True
             hops = event.get("hops")
@@ -278,8 +282,17 @@ async def openalex_key_status():
 
 
 @app.post("/api/openalex-key")
-async def set_openalex_key(payload: OpenAlexKeyPayload):
-    _client.set_api_key(payload.api_key)
+async def set_openalex_key(request: Request):
+    api_key = request.query_params.get("api_key", "").strip()
+    if not api_key:
+        body = await request.body()
+        if body:
+            try:
+                data = json.loads(body)
+                api_key = str(data.get("api_key", "")).strip()
+            except json.JSONDecodeError:
+                api_key = body.decode("utf-8", errors="ignore").strip()
+    _client.set_api_key(api_key)
     return {"configured": _client.has_api_key}
 
 
@@ -434,7 +447,11 @@ async def institution_rank(
 
     edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
     backend = _make_backend(edge_types)
-    fetch_limit = min(1000, max(candidate_pool, 200 if primary_only else candidate_pool))
+    effective_pool = min(candidate_pool, RANK_EFFECTIVE_POOL_MAX)
+    fetch_limit = min(
+        RANK_FETCH_LIMIT_MAX,
+        max(effective_pool * (4 if primary_only else 1), effective_pool),
+    )
     try:
         candidates = await _client.get_institution_authors(
             inst["id"], limit=fetch_limit, sort="cited_by_count:desc"
@@ -450,13 +467,17 @@ async def institution_rank(
             raise
     if primary_only:
         candidates = [a for a in candidates if _has_primary_inst(a, inst["id"])]
-    candidates = candidates[:candidate_pool]
+    candidates = candidates[:effective_pool]
+    started_count = len([a for a in candidates if _short_id(a["id"]) != target_author.id])
+    rank_errors = 0
+    rank_timeouts = 0
+    semaphore = asyncio.Semaphore(RANK_CONCURRENCY)
 
     async def rank_candidate(author: dict) -> dict:
         author_id = _short_id(author["id"])
         author_name = author.get("display_name", author_id)
         result = await _collect_path(
-            backend, author_id, author_name, target_author.id
+            backend, author_id, author_name, target_author.id, max_depth=RANK_MAX_DEPTH
         )
         return {
             "matched_institution": _get_matching_inst(author, inst["id"], inst["display_name"]),
@@ -474,12 +495,38 @@ async def institution_rank(
             "steps": result["steps"],
         }
 
-    ranked_results = await asyncio.gather(*[
-        rank_candidate(a)
+    async def rank_candidate_safely(author: dict) -> dict | None:
+        nonlocal rank_errors, rank_timeouts
+        async with semaphore:
+            try:
+                return await asyncio.wait_for(
+                    rank_candidate(author),
+                    timeout=RANK_CANDIDATE_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                rank_timeouts += 1
+                return None
+            except Exception:
+                rank_errors += 1
+                return None
+
+    tasks = [
+        asyncio.create_task(rank_candidate_safely(a))
         for a in candidates
         if _short_id(a["id"]) != target_author.id
-    ], return_exceptions=True)
-    ranked = [r for r in ranked_results if not isinstance(r, Exception)]
+    ]
+    if tasks:
+        done, pending = await asyncio.wait(tasks, timeout=RANK_TOTAL_TIMEOUT_S)
+        for task in pending:
+            task.cancel()
+        rank_timeouts += len(pending)
+        ranked = [
+            task.result()
+            for task in done
+            if not task.cancelled() and task.exception() is None and task.result() is not None
+        ]
+    else:
+        ranked = []
     ranked.sort(key=lambda r: (
         r["hops"] is None,
         r["hops"] if r["hops"] is not None else 999,
@@ -495,11 +542,25 @@ async def institution_rank(
         "primary_only": primary_only,
         "include_unconnected": include_unconnected,
         "searched_count": len(ranked),
+        "started_count": started_count,
         "unconnected_count": unconnected_count,
+        "timeout_count": rank_timeouts,
+        "error_count": rank_errors,
         "results": visible[:limit],
     }
     if candidate_source_message:
         response["message"] = candidate_source_message
+    elif not started_count:
+        response["message"] = "No matching institution candidates found."
+    elif not ranked and started_count:
+        response["message"] = (
+            "No paths finished within the 30 second ranking budget. "
+            "Try fewer edge types or turn off current-primary filtering."
+        )
+    elif rank_timeouts or rank_errors:
+        response["message"] = (
+            f"Ranked {len(ranked)} of {started_count} candidates within the time budget."
+        )
     return response
 
 

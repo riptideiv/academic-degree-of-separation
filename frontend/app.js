@@ -20,6 +20,7 @@
   // Base per-type edge opacity (multiplied by a distance factor in applyEdgeFade).
   const EDGE_TYPE_OPACITY = { coauthor: 0.65, citation: 0.5, institution: 0.4, authorship: 0.6 };
   const OPENALEX_KEY_STORAGE = 'researcherOpenAlexKey';
+  const RANK_TIMEOUT_MS = 30000;
 
   // OpenAlex IDs are prefix-typed: works start with 'W', authors with 'A'.
   function isWorkId(id) {
@@ -727,12 +728,24 @@
         institution_id: rankSelection.institution.id,
         target_id: rankSelection.target.id,
         limit: '15',
-        candidate_pool: '40',
+        candidate_pool: '15',
         primary_only: rankPrimaryOnly?.checked ? 'true' : 'false',
       });
       getEnabledEdges().forEach(e => params.append('edges', e));
-      const r = await fetch(`${API_BASE}/api/institution-rank?${params}`);
-      if (!r.ok) throw new Error('ranking failed');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), RANK_TIMEOUT_MS);
+      const r = await fetch(`${API_BASE}/api/institution-rank?${params}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!r.ok) {
+        let msg = 'Ranking failed. Please try again.';
+        try {
+          const body = await r.json();
+          if (body.message) msg = body.message;
+        } catch { /* ignore */ }
+        throw new Error(msg);
+      }
       const data = await r.json();
       if (data.message && !(data.results || []).length) {
         setRankStatus(data.message);
@@ -746,8 +759,11 @@
       const cacheNote = data.message ? ' · using cached local data' : '';
       setRankStatus(`${inst} ${scope} closest to ${targetName}${omittedNote}${cacheNote}`);
       renderRankResults(data.results || []);
-    } catch {
-      setRankStatus('Ranking failed. Please try again.');
+    } catch (err) {
+      const timedOut = err?.name === 'AbortError';
+      setRankStatus(timedOut
+        ? 'Ranking did not finish within 30 seconds. Try fewer edge types or turn off current-primary filtering.'
+        : (err?.message || 'Ranking failed. Please try again.'));
     }
   }
 
