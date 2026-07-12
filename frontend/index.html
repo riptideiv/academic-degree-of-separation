@@ -16,6 +16,10 @@
 
 <body>
   <div id="sidebar">
+    <div id="app-brand" aria-label="Six Degrees of Academia">
+      <svg class="brand-mark" viewBox="0 0 42 42" aria-hidden="true"><path d="M9 27 20 13l13 8M9 27l18 6m-7-20 7 20"/><circle cx="9" cy="27" r="4"/><circle cx="20" cy="13" r="4"/><circle cx="33" cy="21" r="4"/><circle cx="27" cy="33" r="4"/></svg>
+      <div><strong>Six Degrees</strong><span>of Academia</span></div>
+    </div>
     <details class="side-card" id="sec-researchers" open>
       <summary>Researchers</summary>
       <div class="side-card-body">
@@ -36,39 +40,12 @@
           <ul id="degrees-list"></ul>
         </div>
 
-        <div id="institution-rank-panel">
-          <div class="section-label">Rank by institution</div>
-          <form id="rank-search-form">
-            <div id="rank-institution-wrapper">
-              <input type="text" id="rank-institution-input" placeholder="Institution…" autocomplete="off">
-              <button class="smooth-button" id="rank-institution-search" type="button">Search</button>
-            </div>
-            <div id="rank-target-wrapper">
-              <input type="text" id="rank-target-input" placeholder="Closest to…" autocomplete="off">
-              <button class="smooth-button" id="rank-target-search" type="button">Search</button>
-            </div>
-            <label id="rank-primary-wrapper">
-              <input type="checkbox" id="rank-primary-only">
-              Current primary affiliation only
-            </label>
-            <button class="smooth-button" id="rank-btn" type="submit">Rank academics</button>
-          </form>
-          <div id="rank-status"></div>
-          <ul id="rank-results"></ul>
-        </div>
       </div>
     </details>
 
     <details class="side-card" id="sec-options" open>
       <summary>Search options</summary>
       <div class="side-card-body">
-        <div class="section-label">OpenAlex API</div>
-        <div id="openalex-key-row">
-          <input type="password" id="openalex-key-input" placeholder="API key…" autocomplete="off">
-          <button class="smooth-button" id="openalex-key-save" type="button">Save</button>
-        </div>
-        <div id="openalex-key-status"></div>
-
         <div class="section-label">Edge types</div>
         <div id="edge-toggles">
           <label><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>
@@ -113,6 +90,20 @@
             <input type="range" id="layout-link" min="40" max="220" step="10" value="100">
           </label>
         </div>
+      </div>
+    </details>
+
+    <details class="side-card" id="sec-advanced">
+      <summary>Advanced settings</summary>
+      <div class="side-card-body">
+        <div class="section-label">OpenAlex API key</div>
+        <p class="settings-help">The app normally supplies this automatically. If OpenAlex access fails, you can use your own free key.</p>
+        <div id="openalex-key-row">
+          <input type="password" id="openalex-key-input" placeholder="Paste API key…" autocomplete="off" aria-describedby="openalex-key-help">
+          <button class="smooth-button" id="openalex-key-save" type="button">Save</button>
+        </div>
+        <div id="openalex-key-help" class="settings-help">Create a free OpenAlex account, then copy your key from <a href="https://openalex.org/settings/api" target="_blank" rel="noopener">OpenAlex API settings ↗</a>.</div>
+        <div id="openalex-key-status" aria-live="polite"></div>
       </div>
     </details>
 
@@ -202,6 +193,40 @@
         <button id="empty-example" type="button">Try an example: Geoffrey Hinton ↔ Noam Chomsky</button>
       </div>
     </div>
+    <div id="institution-explorer-shell">
+      <details id="institution-explorer" class="graph-window" open>
+        <summary class="graph-window-title">
+          <span>Institution Explorer</span>
+          <button type="button" class="info-button" aria-label="About Institution Explorer" aria-describedby="institution-info-tooltip">i</button>
+        </summary>
+        <div class="explorer-content" aria-live="polite">
+          <header class="explorer-header">
+            <div id="home-institution-picker">
+              <label for="rank-institution-input">Home institution</label>
+              <div id="rank-institution-wrapper">
+                <input type="text" id="rank-institution-input" placeholder="Choose your institution…" autocomplete="off">
+                <button class="smooth-button" id="rank-institution-search" type="button">Choose</button>
+              </div>
+            </div>
+            <div id="home-institution-pill" class="hidden">
+              <span id="home-institution-name"></span>
+              <button id="home-institution-change" type="button">Change</button>
+            </div>
+            <div class="explorer-actions">
+              <div id="rank-status"></div>
+              <div id="explorer-loading" class="hidden"><span class="mini-spinner" aria-hidden="true"></span><span>Updating recommendations…</span></div>
+              <button class="icon-button" id="rank-refresh" type="button" aria-label="Refresh researcher suggestions" title="Refresh suggestions">↻</button>
+            </div>
+          </header>
+          <div class="explorer-results-scroll"><ul id="rank-results"></ul></div>
+        </div>
+      </details>
+      <aside id="author-sidecar" class="hidden" aria-live="polite" aria-label="Author details">
+        <button id="author-sidecar-close" type="button" aria-label="Close author details">×</button>
+        <div id="author-sidecar-content"></div>
+      </aside>
+    </div>
+    <div id="institution-info-tooltip" role="tooltip" class="floating-tooltip hidden">Choose your school to discover its researchers whose work is most closely related to researchers you already like. Results use coauthorship connections as a clue—not as a judgment of quality.</div>
     <details id="graph-legend" class="hidden" open>
       <summary class="legend-title">Legend</summary>
       <div class="legend-row"><span class="legend-node" style="background:#f5821e"></span> Searched researcher</div>

@@ -1,4 +1,3 @@
-api-keys.json
 __pycache__/
 .pytest_cache/
 *.pyc
@@ -11,3 +10,4 @@ venv/
 .superpowers/
 neighbor_cache.json
 CLAUDE.md
+AGENTS.md
