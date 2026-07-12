@@ -24,6 +24,20 @@ async def test_health_reports_supabase_store():
     assert resp.json() == {"status": "ok", "store": "supabase"}
 
 
+async def test_openalex_key_accepts_plain_text_payload():
+    with patch("backend.app._client") as mock_client:
+        mock_client.has_api_key = True
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/openalex-key",
+                content="test-openalex-key",
+                headers={"content-type": "text/plain"},
+            )
+    assert resp.status_code == 200
+    assert resp.json() == {"configured": True}
+    mock_client.set_api_key.assert_called_once_with("test-openalex-key")
+
+
 async def test_search_authors_returns_results():
     mock_results = [
         AuthorResult(id="A1", display_name="Alice", institution="MIT", works_count=10)
@@ -131,7 +145,7 @@ async def test_institution_rank_sorts_by_closest_path():
         },
     ]
 
-    async def mock_find_path(backend, source_id, source_name, target_id, target_name):
+    async def mock_find_path(backend, source_id, source_name, target_id, target_name, max_depth=6):
         if source_id == "A1":
             yield {
                 "type": "result", "found": True, "hops": 1,
@@ -185,7 +199,7 @@ async def test_institution_rank_sorts_by_closest_path():
         "openalex_url": "https://openalex.org/I1",
     }
     mock_client.get_institution_authors.assert_awaited_once_with(
-        "I1", limit=40, sort="cited_by_count:desc"
+        "I1", limit=15, sort="cited_by_count:desc"
     )
 
 
@@ -211,7 +225,7 @@ async def test_institution_rank_primary_only_filters_non_primary_affiliations():
         },
     ]
 
-    async def mock_find_path(backend, source_id, source_name, target_id, target_name):
+    async def mock_find_path(backend, source_id, source_name, target_id, target_name, max_depth=6):
         yield {"type": "result", "found": False, "reason": "No path found"}
 
     with patch("backend.app._client") as mock_client, \
@@ -236,7 +250,7 @@ async def test_institution_rank_primary_only_filters_non_primary_affiliations():
     assert data["unconnected_count"] == 1
     assert data["results"] == []
     mock_client.get_institution_authors.assert_awaited_once_with(
-        "I1", limit=200, sort="cited_by_count:desc"
+        "I1", limit=60, sort="cited_by_count:desc"
     )
 
 
@@ -255,7 +269,7 @@ async def test_institution_rank_can_include_unconnected_results():
         },
     ]
 
-    async def mock_find_path(backend, source_id, source_name, target_id, target_name):
+    async def mock_find_path(backend, source_id, source_name, target_id, target_name, max_depth=6):
         yield {"type": "result", "found": False, "reason": "No path found"}
 
     with patch("backend.app._client") as mock_client, \
