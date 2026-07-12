@@ -1,4 +1,3 @@
-import json
 import pytest
 import respx
 import httpx
@@ -6,10 +5,9 @@ from backend.openalex_client import OpenAlexClient, _short_id, _FILTER_CHUNK, _c
 
 
 @pytest.fixture
-def api_key_file(tmp_path):
-    f = tmp_path / "api-keys.json"
-    f.write_text(json.dumps({"openalex-key": "test_key"}))
-    return f
+def api_key_file(monkeypatch):
+    """Keep the historical fixture name while configuring the supported env source."""
+    monkeypatch.setenv("OPENALEX_KEY", "test_key")
 
 
 def test_short_id():
@@ -31,7 +29,7 @@ async def test_search_authors(api_key_file):
             ]
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     results, total = await client.search_authors("Alice")
     assert len(results) == 1
     assert results[0].id == "A123"
@@ -55,7 +53,7 @@ async def test_search_authors_no_institution(api_key_file):
             ]
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     results, _total = await client.search_authors("Bob")
     assert results[0].institution is None
 
@@ -65,7 +63,7 @@ async def test_search_authors_pagination_params(api_key_file):
     route = respx.get("https://api.openalex.org/authors").mock(
         return_value=httpx.Response(200, json={"results": [], "meta": {"count": 0}})
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     await client.search_authors("Alice", page=3, per_page=20)
     request = route.calls.last.request
     params = dict(httpx.QueryParams(request.url.query))
@@ -82,7 +80,7 @@ async def test_get_author(api_key_file):
             "last_known_institutions": [{"id": "https://openalex.org/I1", "display_name": "MIT"}],
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     data = await client.get_author("A123")
     assert data["display_name"] == "Alice Smith"
 
@@ -103,7 +101,7 @@ async def test_get_author_works(api_key_file):
             ]
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     works = await client.get_author_works("A123")
     assert len(works) == 1
     assert works[0]["title"] == "Paper One"
@@ -119,7 +117,7 @@ async def test_search_does_not_retry_on_429(api_key_file):
         return httpx.Response(429)
 
     respx.get("https://api.openalex.org/authors").mock(side_effect=side_effect)
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     import pytest
     with pytest.raises(httpx.HTTPStatusError):
         await client.search_authors("test")
@@ -135,7 +133,7 @@ async def test_get_citing_works(api_key_file):
             ]
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     works = await client.get_citing_works("W1")
     assert len(works) == 1
     assert works[0]["title"] == "Citing Paper"
@@ -150,7 +148,7 @@ async def test_get_institution_authors(api_key_file):
             ]
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     authors = await client.get_institution_authors("I1")
     assert len(authors) == 1
     assert authors[0]["display_name"] == "Carol"
@@ -161,7 +159,7 @@ async def test_retry_exhaustion_raises(api_key_file):
     respx.get("https://api.openalex.org/authors").mock(
         return_value=httpx.Response(429)
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     import unittest.mock as mock
     with mock.patch("asyncio.sleep"):
         with pytest.raises(httpx.HTTPStatusError):
@@ -192,7 +190,7 @@ async def test_get_works_by_authors_chunks_large_list(api_key_file):
         })
 
     respx.get("https://api.openalex.org/works").mock(side_effect=handler)
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     # Build a list larger than FILTER_CHUNK to force chunking
     author_ids = [f"A{i}" for i in range(_FILTER_CHUNK + 1)]
     works = await client.get_works_by_authors(author_ids)
@@ -215,7 +213,7 @@ async def test_get_works_batch(api_key_file):
             ]
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     works = await client.get_works_batch(["W1"])
     assert len(works) == 1
     assert works[0]["title"] == "Paper One"
@@ -230,7 +228,7 @@ async def test_get_work(api_key_file):
             "cited_by_count": 10,
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     data = await client.get_work("W1")
     assert data["title"] == "Paper One"
 
@@ -255,7 +253,7 @@ async def test_search_works(api_key_file):
             "meta": {"count": 1},
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     results, total = await client.search_works("test")
     assert total == 1
     assert len(results) == 1
@@ -273,7 +271,7 @@ async def test_get_author_works_includes_referenced_works(api_key_file):
     route = respx.get("https://api.openalex.org/works").mock(
         return_value=httpx.Response(200, json={"results": []})
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     await client.get_author_works("A1")
     request = route.calls.last.request
     params = dict(httpx.QueryParams(request.url.query))
@@ -285,7 +283,7 @@ async def test_get_works_by_authors_includes_referenced_works(api_key_file):
     route = respx.get("https://api.openalex.org/works").mock(
         return_value=httpx.Response(200, json={"results": []})
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     await client.get_works_by_authors(["A1"])
     request = route.calls.last.request
     params = dict(httpx.QueryParams(request.url.query))
@@ -305,7 +303,7 @@ async def test_get_authors_batch_chunks_large_list(api_key_file):
         })
 
     respx.get("https://api.openalex.org/authors").mock(side_effect=handler)
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     author_ids = [f"A{i}" for i in range(_FILTER_CHUNK + 1)]
     authors = await client.get_authors_batch(author_ids)
     assert call_count == 2
@@ -322,7 +320,7 @@ async def test_get_authors_batch_caches_records(api_key_file):
             }]
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     first = await client.get_authors_batch(["A1"])
     second = await client.get_authors_batch(["A1"])
     assert route.call_count == 1  # second call is served from the LRU
@@ -344,7 +342,7 @@ async def test_get_authors_batch_fetches_only_uncached_ids(api_key_file):
         })
 
     route = respx.get("https://api.openalex.org/authors").mock(side_effect=handler)
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     await client.get_authors_batch(["A1"])
     result = await client.get_authors_batch(["A1", "A2"])
 
@@ -365,7 +363,7 @@ async def test_get_author_populates_and_reads_author_lru(api_key_file):
     batch = respx.get("https://api.openalex.org/authors").mock(
         return_value=httpx.Response(200, json={"results": []})
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
 
     first = await client.get_author("A123")
     second = await client.get_author("A123")
@@ -385,7 +383,7 @@ async def test_clear_author_cache_forces_refetch(api_key_file):
             "id": "https://openalex.org/A123", "display_name": "Alice",
         })
     )
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     await client.get_author("A123")
     client.clear_author_cache()
     await client.get_author("A123")
@@ -393,35 +391,32 @@ async def test_clear_author_cache_forces_refetch(api_key_file):
 
 
 def test_concurrency_default_keyed(api_key_file, monkeypatch):
-    monkeypatch.delenv("OPENALEX_KEY", raising=False)
     monkeypatch.delenv("OPENALEX_CONCURRENCY", raising=False)
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     assert client._semaphore._value == 15
 
 
 def test_concurrency_default_keyless(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENALEX_KEY", raising=False)
     monkeypatch.delenv("OPENALEX_CONCURRENCY", raising=False)
-    client = OpenAlexClient(api_key_path=tmp_path / "missing.json")
+    client = OpenAlexClient()
     assert client._semaphore._value == 8
 
 
 def test_concurrency_env_override(api_key_file, monkeypatch):
-    monkeypatch.delenv("OPENALEX_KEY", raising=False)
     monkeypatch.setenv("OPENALEX_CONCURRENCY", "42")
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     assert client._semaphore._value == 42
 
 
 def test_concurrency_invalid_env_falls_back(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENALEX_KEY", raising=False)
     monkeypatch.setenv("OPENALEX_CONCURRENCY", "not-a-number")
-    client = OpenAlexClient(api_key_path=tmp_path / "missing.json")
+    client = OpenAlexClient()
     assert client._semaphore._value == 8
 
 
 def test_concurrency_zero_env_falls_back(api_key_file, monkeypatch):
-    monkeypatch.delenv("OPENALEX_KEY", raising=False)
     monkeypatch.setenv("OPENALEX_CONCURRENCY", "0")
-    client = OpenAlexClient(api_key_path=api_key_file)
+    client = OpenAlexClient()
     assert client._semaphore._value == 15

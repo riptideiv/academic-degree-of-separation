@@ -1,15 +1,12 @@
 import asyncio
-import json
 import os
 from collections import OrderedDict
-from pathlib import Path
 
 import httpx
 
 from backend.models import AuthorResult, WorkResult
 
 API_BASE = "https://api.openalex.org"
-_DEFAULT_KEY_PATH = Path(__file__).parent.parent / "api-keys.json"
 _FILTER_CHUNK = 50  # max IDs per pipe-separated filter to stay within URL limits
 
 
@@ -23,20 +20,13 @@ def _chunks(lst: list, n: int):
 
 
 class OpenAlexClient:
-    def __init__(self, api_key_path: Path | None = None):
-        keys: dict = {}
-        path = api_key_path or _DEFAULT_KEY_PATH
-        if path.exists():
-            try:
-                keys = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
-                keys = {}
-        self._api_key = os.environ.get("OPENALEX_KEY") or keys.get("openalex-key", "") or ""
+    def __init__(self):
+        self._api_key = os.environ.get("OPENALEX_KEY", "")
         # OpenAlex retired the "polite pool" in early 2025; mailto no longer affects
         # rate limits (higher limits now come from OPENALEX_KEY / the api_key param).
         # We still send a descriptive User-Agent / mailto as a courtesy identifier.
-        # Configure via OPENALEX_MAILTO env var or a "mailto" entry in api-keys.json.
-        self._mailto = os.environ.get("OPENALEX_MAILTO") or keys.get("mailto", "") or ""
+        # Configure via OPENALEX_MAILTO.
+        self._mailto = os.environ.get("OPENALEX_MAILTO", "")
         # Cap on concurrent OpenAlex requests. Each BFS level fans out many chunked
         # requests via asyncio.gather; too small a gate serializes them. Configurable
         # via OPENALEX_CONCURRENCY; otherwise key-aware (a key raises the daily budget,
