@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-# Load local env vars (e.g. SUPABASE_DB_URL) from .env.local so local runs mirror
+# Load local env vars from .env.local so local runs mirror
 # Render. override=False means real environment vars (Render's) always win.
 load_dotenv(Path(__file__).parent.parent / ".env.local", override=False)
 
@@ -41,9 +41,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_KEY_PATH = Path(__file__).parent.parent / "api-keys.json"
-_keys: dict = json.loads(_KEY_PATH.read_text()) if _KEY_PATH.exists() else {}
-
 _client = OpenAlexClient()
 _BACKEND = os.environ.get("BACKEND", "openalex")
 
@@ -51,7 +48,7 @@ _BACKEND = os.environ.get("BACKEND", "openalex")
 # A bounded in-memory LRU (`NeighborCache`) fronts a durable NeighborStore, so the
 # process footprint stays flat under load instead of holding the whole table
 # resident. On an LRU miss the store is consulted per-id; only a true miss hits
-# OpenAlex. Setting SUPABASE_DB_URL (or `supabase-db-url` in api-keys.json)
+# OpenAlex. Setting SUPABASE_POOLER_CONNECTION_STRING
 # selects the Postgres-backed store (survives Render's ephemeral FS); otherwise a
 # local JSON file is used. NEIGHBOR_CACHE_MAX caps the resident entry count.
 
@@ -61,7 +58,7 @@ _local_index = LocalCacheIndex(_CACHE_FILE)
 
 
 def _make_store() -> NeighborStore:
-    dsn = _keys.get("supabase-db-url") or os.environ.get("SUPABASE_DB_URL")
+    dsn = os.environ.get("SUPABASE_POOLER_CONNECTION_STRING")
     if dsn:
         return SupabaseNeighborStore(dsn)
     return JsonNeighborStore(_CACHE_FILE)
@@ -71,7 +68,7 @@ _store: NeighborStore = _make_store()
 _cache = NeighborCache(_store, max_size=_CACHE_MAX)
 
 
-RANK_EFFECTIVE_POOL_MAX = 15
+RANK_EFFECTIVE_POOL_MAX = 30
 RANK_FETCH_LIMIT_MAX = 80
 RANK_TOTAL_TIMEOUT_S = 28
 RANK_CANDIDATE_TIMEOUT_S = 8
@@ -92,11 +89,10 @@ app.router.lifespan_context = lifespan
 def _make_backend(edge_types: set[str], work_edge_types: set[str] | None = None) -> OpenAlexBackend:
     if _BACKEND == "bigquery":
         from backend.bigquery_backend import BigQueryBackend
-        project = _keys.get("gcp-project") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+        project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
         if not project:
             raise RuntimeError(
-                "BigQuery backend requires gcp-project in api-keys.json "
-                "or GOOGLE_CLOUD_PROJECT env var"
+                "BigQuery backend requires the GOOGLE_CLOUD_PROJECT environment variable"
             )
         return BigQueryBackend(project, edge_types=edge_types)
     return OpenAlexBackend(
@@ -144,11 +140,12 @@ def _is_rate_limited(exc: Exception) -> bool:
 def _rate_limit_message() -> str:
     if not _client.has_api_key:
         return (
-            "Live OpenAlex search is unavailable because this local app is not "
-            "configured with your OpenAlex API key. Showing cached local results when available."
+            "OpenAlex search is temporarily unavailable. Open Advanced settings at the "
+            "bottom of the menu to add your own free OpenAlex API key. Showing saved results when available."
         )
     return (
-        "OpenAlex returned a live-search limit response. Showing cached local results when available."
+        "The configured OpenAlex API key was rejected or reached its limit. Open Advanced "
+        "settings at the bottom of the menu to add your own free key. Showing saved results when available."
     )
 
 
@@ -374,19 +371,20 @@ async def search_institutions(
     }
 
 
-@app.get("/api/institution-rank")
+@app.get("/api/institution-suggestions")
 async def institution_rank(
     institution: str | None = Query(default=None, min_length=2),
-    target: str | None = Query(default=None, min_length=2),
     institution_id: str | None = Query(default=None),
-    target_id: str | None = Query(default=None),
-    limit: int = Query(default=15, ge=1, le=30),
-    candidate_pool: int = Query(default=40, ge=1, le=75),
-    primary_only: bool = Query(default=False),
-    include_unconnected: bool = Query(default=False),
-    edges: list[str] = Query(default=list(ALL_EDGE_TYPES)),
+    origin_ids: list[str] = Query(default=[]),
+    limit: int = Query(default=10, ge=1, le=20),
+    candidate_pool: int = Query(default=30, ge=1, le=75),
+    max_depth: int = Query(default=4, ge=1, le=6),
 ):
-    """Rank institution-affiliated authors by shortest path to a target author."""
+    """Suggest current institution researchers near any author in the graph.
+
+    Discovery distance deliberately uses co-authorship only. The graph's display
+    edge settings do not affect this relevance signal.
+    """
     if institution_id:
         inst = {
             "id": institution_id,
@@ -397,7 +395,7 @@ async def institution_rank(
         }
     else:
         if not institution:
-            return {"institution": None, "target": None, "results": [], "message": "Select an institution."}
+            return {"institution": None, "results": [], "message": "Select a home institution."}
         try:
             institution_results, _ = await _client.search_institutions(institution, page=1, per_page=1)
         except Exception as exc:
@@ -407,50 +405,20 @@ async def institution_rank(
         if not institution_results:
             return {
                 "institution": None,
-                "target": None,
                 "results": [],
                 "message": f"No institution found for {institution!r}",
             }
         inst = institution_results[0]
 
-    if target_id:
-        try:
-            target_obj = await _client.get_author(target_id)
-        except Exception as exc:
-            if not _is_rate_limited(exc):
-                raise
-            target_obj = _local_index.author_record(target_id, target)
-        target_author = AuthorResult(
-            id=target_id,
-            display_name=target_obj.get("display_name", target or target_id),
-            institution=_get_inst(target_obj),
-            works_count=target_obj.get("works_count", 0),
-            cited_by_count=target_obj.get("cited_by_count", 0),
-        )
-    else:
-        if not target:
-            return {"institution": inst, "target": None, "results": [], "message": "Select a target academic."}
-        try:
-            target_results, _ = await _client.search_authors(target, page=1, per_page=1)
-        except Exception as exc:
-            if not _is_rate_limited(exc):
-                raise
-            target_results, _ = _local_index.search_authors(target, page=1, per_page=1)
-        if not target_results:
-            return {
-                "institution": inst,
-                "target": None,
-                "results": [],
-                "message": f"No target author found for {target!r}",
-            }
-        target_author = target_results[0]
+    origins = list(dict.fromkeys(_short_id(i) for i in origin_ids if i and not _is_work_id(i)))
+    if not origins:
+        return {"institution": inst, "results": [], "message": "Add a researcher you like to the graph first."}
 
-    edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
-    backend = _make_backend(edge_types)
+    backend = _make_backend({"coauthor"})
     effective_pool = min(candidate_pool, RANK_EFFECTIVE_POOL_MAX)
     fetch_limit = min(
         RANK_FETCH_LIMIT_MAX,
-        max(effective_pool * (4 if primary_only else 1), effective_pool),
+        max(effective_pool * 4, effective_pool),
     )
     try:
         candidates = await _client.get_institution_authors(
@@ -465,10 +433,9 @@ async def institution_rank(
             candidate_source_message = _rate_limit_message()
         else:
             raise
-    if primary_only:
-        candidates = [a for a in candidates if _has_primary_inst(a, inst["id"])]
+    candidates = [a for a in candidates if _has_primary_inst(a, inst["id"])]
     candidates = candidates[:effective_pool]
-    started_count = len([a for a in candidates if _short_id(a["id"]) != target_author.id])
+    started_count = len([a for a in candidates if _short_id(a["id"]) not in origins])
     rank_errors = 0
     rank_timeouts = 0
     semaphore = asyncio.Semaphore(RANK_CONCURRENCY)
@@ -476,9 +443,13 @@ async def institution_rank(
     async def rank_candidate(author: dict) -> dict:
         author_id = _short_id(author["id"])
         author_name = author.get("display_name", author_id)
-        result = await _collect_path(
-            backend, author_id, author_name, target_author.id, max_depth=RANK_MAX_DEPTH
-        )
+        paths = await asyncio.gather(*[
+            _collect_path(backend, author_id, author_name, origin_id, max_depth=max_depth)
+            for origin_id in origins
+        ])
+        found_paths = [(origin_id, path) for origin_id, path in zip(origins, paths) if path["found"]]
+        closest_id, result = min(found_paths, key=lambda pair: pair[1]["hops"]) if found_paths else (None, {"found": False, "hops": None, "steps": []})
+        topics = [t.get("display_name") for t in (author.get("topics") or author.get("x_concepts") or [])[:3] if t.get("display_name")]
         return {
             "matched_institution": _get_matching_inst(author, inst["id"], inst["display_name"]),
             "affiliation_evidence": _affiliation_evidence(author, inst["id"]),
@@ -489,10 +460,14 @@ async def institution_rank(
                 "works_count": author.get("works_count", 0),
                 "cited_by_count": author.get("cited_by_count", 0),
                 "openalex_url": f"https://openalex.org/{author_id}",
+                "orcid": author.get("orcid"),
+                "topics": topics,
             },
             "found": result["found"],
             "hops": result["hops"],
             "steps": result["steps"],
+            "closest_origin_id": closest_id,
+            "reachable_origin_count": len(found_paths),
         }
 
     async def rank_candidate_safely(author: dict) -> dict | None:
@@ -513,7 +488,7 @@ async def institution_rank(
     tasks = [
         asyncio.create_task(rank_candidate_safely(a))
         for a in candidates
-        if _short_id(a["id"]) != target_author.id
+        if _short_id(a["id"]) not in origins
     ]
     if tasks:
         done, pending = await asyncio.wait(tasks, timeout=RANK_TOTAL_TIMEOUT_S)
@@ -530,17 +505,16 @@ async def institution_rank(
     ranked.sort(key=lambda r: (
         r["hops"] is None,
         r["hops"] if r["hops"] is not None else 999,
+        -r["reachable_origin_count"],
         -r["author"]["cited_by_count"],
         r["author"]["display_name"].casefold(),
     ))
-    visible = ranked if include_unconnected else [r for r in ranked if r["found"]]
+    visible = [r for r in ranked if r["found"]]
     unconnected_count = sum(1 for r in ranked if not r["found"])
 
     response = {
         "institution": inst,
-        "target": target_author.model_dump(),
-        "primary_only": primary_only,
-        "include_unconnected": include_unconnected,
+        "origin_ids": origins,
         "searched_count": len(ranked),
         "started_count": started_count,
         "unconnected_count": unconnected_count,
@@ -554,8 +528,13 @@ async def institution_rank(
         response["message"] = "No matching institution candidates found."
     elif not ranked and started_count:
         response["message"] = (
-            "No paths finished within the 30 second ranking budget. "
-            "Try fewer edge types or turn off current-primary filtering."
+            "The explorer could not finish checking researchers this time. "
+            "Please refresh to try again."
+        )
+    elif not visible:
+        response["message"] = (
+            "We could not find a coauthor connection between researchers at your school "
+            "and the researchers in your graph yet. Try adding more researchers you like."
         )
     elif rank_timeouts or rank_errors:
         response["message"] = (

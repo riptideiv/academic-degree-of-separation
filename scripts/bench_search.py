@@ -46,7 +46,7 @@ async def ensure_disposable_store(client: httpx.AsyncClient, allow_shared: bool)
         raise SystemExit(
             "target server persists its neighbor cache to the shared Supabase store; "
             "the benchmark's DELETE /api/cache would wipe it for everyone. "
-            "Unset SUPABASE_DB_URL / supabase-db-url so the server uses a local JSON "
+            "Unset SUPABASE_POOLER_CONNECTION_STRING so the server uses a local JSON "
             "store, or pass --allow-shared-store to proceed anyway."
         )
 

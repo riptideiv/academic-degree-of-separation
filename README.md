@@ -25,33 +25,41 @@ uvicorn backend.app:app --reload --port 8000
 open http://127.0.0.1:8000        # macOS  (or just visit the URL)
 ```
 
-Type a researcher's name in the sidebar, click a result, then add a second one (or
-click the example query on the empty canvas to see it in action). The
-sidebar shows the **degrees of separation** and the full shortest path (names plus the
-paper or institution behind each hop), and the graph renders their neighborhoods.
+Type a researcher's name in the sidebar, choose a result, then add a second one (or
+use the example on the empty canvas). The sidebar shows the **degrees of separation**
+and the full shortest path, while the graph renders their surrounding research network.
+Optionally choose a home institution in **Institution Explorer** to discover local
+researchers whose coauthor networks are closest to the researchers you already like.
 
-You can try it with no configuration, but a **free** OpenAlex API key is
-recommended — OpenAlex retired the old "polite pool" in early 2025 and now gates
-throughput behind a key, raising your daily allowance from ~$0.10/day (keyless) to
-~$1/day. Grab one in about 30 seconds at
-[openalex.org/settings/api](https://openalex.org/settings/api) (see below).
+OpenAlex now requires an API key for normal API use. Keys are free; create an account
+and copy yours from [openalex.org/settings/api](https://openalex.org/settings/api).
 
 ## Configuration
 
-All optional. Set via environment variables, or an `api-keys.json` file in the repo
-root (git-ignored):
+For local development, put configuration in `.env.local` at the repository root.
+`backend.app` loads this file without overriding variables already supplied by the
+shell or deployment platform. Do not commit `.env.local`.
 
-| Env var | `api-keys.json` key | Purpose |
-|---|---|---|
-| `OPENALEX_KEY` | `openalex-key` | Free (or premium) OpenAlex API key, sent as the `api_key` query param. As of early 2025 OpenAlex requires a key for anything beyond a tiny keyless allowance (~$0.10/day vs. ~$1/day with a free key). Get one at [openalex.org/settings/api](https://openalex.org/settings/api). **Recommended.** |
-| `OPENALEX_MAILTO` | `mailto` | Your email. Formerly opted requests into OpenAlex's "polite pool" — that pool was **retired** when API keys launched, so this no longer affects rate limits. Optional; still sent as a courtesy identifier in the User-Agent. |
-| `BACKEND` | (n/a) | `openalex` (default) or `bigquery`. |
-| `GOOGLE_CLOUD_PROJECT` | `gcp-project` | GCP project for the optional BigQuery backend. |
+| Variable | Purpose |
+|---|---|
+| `OPENALEX_KEY` | OpenAlex API key used by all scholarly-data requests. Get a free key at [openalex.org/settings/api](https://openalex.org/settings/api). |
+| `OPENALEX_MAILTO` | Courtesy contact identifier sent to OpenAlex in the User-Agent and `mailto` parameter. |
+| `SUPABASE_POOLER_CONNECTION_STRING` | Supabase Supavisor **transaction pooler** Postgres connection string (normally port 6543). Enables the durable neighbor cache; without it the app uses `neighbor_cache.json`. |
+| `SUPABASE_URL` | Supabase project URL. Kept with the project configuration for other Supabase integrations; the current asyncpg cache connects through `SUPABASE_POOLER_CONNECTION_STRING`. |
+| `SUPABASE_POOL_MAX` | Maximum asyncpg pool size for Supabase (default `5`). Keep this small for the transaction pooler. |
+| `NEIGHBOR_CACHE_MAX` | Maximum neighbor rings retained in the in-memory LRU (default `10000`). Durable-store contents are unaffected. |
+| `BACKEND` | Graph backend: `openalex` (default) or `bigquery`. |
+| `GOOGLE_CLOUD_PROJECT` | Required only when `BACKEND=bigquery`. |
+| `OPENALEX_CONCURRENCY` | Optional maximum number of concurrent OpenAlex requests; defaults to `15` with a key and `8` without one. |
 
-Example `api-keys.json`:
+Example `.env.local`:
 
-```json
-{ "openalex-key": "YOUR_OPENALEX_KEY" }
+```dotenv
+OPENALEX_KEY=your_openalex_key
+OPENALEX_MAILTO=you@example.edu
+SUPABASE_POOLER_CONNECTION_STRING=postgresql://...
+SUPABASE_URL=https://your-project.supabase.co
+GOOGLE_CLOUD_PROJECT=your-gcp-project
 ```
 
 ## Running the tests
@@ -67,7 +75,7 @@ the app), so it's fast and offline.
 
 ```
 backend/
-  app.py              FastAPI app: /api/authors, /api/path, /api/graph/expand (SSE)
+  app.py              FastAPI app: search, graph SSE, institution suggestions, cache
   bfs.py              Bidirectional BFS path-finder
   graph_backend.py    OpenAlex graph backend (co-author / citation / institution edges)
   graph_expand.py     Neighborhood expansion (ranked BFS) for the visualization
@@ -93,7 +101,12 @@ tests/                pytest suite
    streamed, so the graph grows during the search. Each connected pair emits a
    `path` event carrying the hop count and the ordered steps as soon as the search
    finishes.
-3. The **frontend** consumes the SSE stream, draws nodes/edges with Cytoscape, and
+3. **Institution Explorer** (`/api/institution-suggestions`) treats author origins as
+   a research-interest profile. It ranks current-primary researchers at the selected
+   home institution using coauthorship paths only; citations and shared institutions
+   do not affect these suggestions. Profiles emphasize topics, representative works,
+   OpenAlex/ORCID links, with adding a suggestion to the graph as a secondary action.
+4. The **frontend** consumes the SSE stream, draws nodes/edges with Cytoscape, and
    lists the degrees of separation + shortest paths in the sidebar. Edge types share
    one color and are distinguished by dash pattern (solid = co-authorship, dashed =
    citation with the arrow pointing at the cited, short dash = shared institution;
@@ -120,4 +133,5 @@ rings were never fetched are simply not drawn.
 ## Deployment
 
 `render.yaml` describes a one-service deploy on [Render](https://render.com): it
-installs `requirements.txt` and runs `uvicorn backend.app:app`.
+installs `requirements.txt`, runs `uvicorn backend.app:app`, and declares the required
+secret environment variables. Render does not read the local `.env.local` file.

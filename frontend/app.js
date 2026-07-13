@@ -20,7 +20,14 @@
   // Base per-type edge opacity (multiplied by a distance factor in applyEdgeFade).
   const EDGE_TYPE_OPACITY = { coauthor: 0.65, citation: 0.5, institution: 0.4, authorship: 0.6 };
   const OPENALEX_KEY_STORAGE = 'researcherOpenAlexKey';
+  const HOME_INSTITUTION_STORAGE = 'researcherHomeInstitutionV1';
   const RANK_TIMEOUT_MS = 30000;
+  let suggestionRequestId = 0;
+  let authorDetailRequestId = 0;
+  let selectedSuggestionId = null;
+  let currentSuggestions = [];
+  let explorerUpdating = false;
+  let explorerRefreshPending = false;
 
   // OpenAlex IDs are prefix-typed: works start with 'W', authors with 'A'.
   function isWorkId(id) {
@@ -301,6 +308,11 @@
     showTooltip(lines.join('<br>'));
   });
   cy.on('mouseout', 'edge', hideTooltip);
+  // Cytoscape may not emit node/edge mouseout when the cursor leaves the canvas
+  // quickly, leaving the tooltip stuck to the cursor. Hide it when the pointer
+  // leaves the container, and on pan/zoom.
+  cy.container().addEventListener('mouseleave', hideTooltip);
+  cy.on('pan zoom', hideTooltip);
 
   // ── Node click → sidebar detail ───────────────────────────────────────────
   cy.on('tap', 'node', function (evt) {
@@ -331,19 +343,25 @@
   const searchBtn = document.getElementById('search-btn');
   const workSearchInput = document.getElementById('work-search-input');
   const workSearchBtn = document.getElementById('work-search-btn');
-  const rankSearchForm = document.getElementById('rank-search-form');
   const rankInstitutionInput = document.getElementById('rank-institution-input');
   const rankInstitutionSearch = document.getElementById('rank-institution-search');
-  const rankTargetInput = document.getElementById('rank-target-input');
-  const rankTargetSearch = document.getElementById('rank-target-search');
-  const rankPrimaryOnly = document.getElementById('rank-primary-only');
   const openAlexKeyInput = document.getElementById('openalex-key-input');
   const openAlexKeySave = document.getElementById('openalex-key-save');
   const openAlexKeyStatus = document.getElementById('openalex-key-status');
   const rankSelection = {
     institution: null,
-    target: null,
   };
+  try { rankSelection.institution = JSON.parse(localStorage.getItem(HOME_INSTITUTION_STORAGE) || 'null'); } catch { /* ignore */ }
+  if (rankSelection.institution && rankInstitutionInput) rankInstitutionInput.value = rankSelection.institution.display_name;
+
+  function renderHomeInstitution() {
+    const selected = !!rankSelection.institution;
+    document.getElementById('home-institution-picker')?.classList.toggle('hidden', selected);
+    document.getElementById('home-institution-pill')?.classList.toggle('hidden', !selected);
+    const name = document.getElementById('home-institution-name');
+    if (name) name.textContent = rankSelection.institution?.display_name || '';
+  }
+  renderHomeInstitution();
 
   // State for the currently open (or last opened) search modal session. Page and
   // per-author-top-papers results are cached here so revisiting a page, or
@@ -367,7 +385,36 @@
     if (e.key === 'Enter') runSearch('work', workSearchInput);
   });
   rankInstitutionSearch?.addEventListener('click', () => runSearch('rank-institution', rankInstitutionInput));
-  rankTargetSearch?.addEventListener('click', () => runSearch('rank-target', rankTargetInput));
+  document.getElementById('rank-refresh')?.addEventListener('click', () => runInstitutionRank());
+  document.getElementById('home-institution-change')?.addEventListener('click', () => {
+    suggestionRequestId += 1;
+    setExplorerLoading(false);
+    rankSelection.institution = null;
+    localStorage.removeItem(HOME_INSTITUTION_STORAGE);
+    renderHomeInstitution();
+    renderRankResults([]);
+    setRankStatus('Choose your school to get personalized suggestions.');
+    rankInstitutionInput?.focus();
+  });
+  const explorerInfo = document.querySelector('.info-button');
+  const explorerTooltip = document.getElementById('institution-info-tooltip');
+  function showExplorerTooltip() {
+    if (!explorerInfo || !explorerTooltip) return;
+    const rect = explorerInfo.getBoundingClientRect();
+    explorerTooltip.style.left = `${Math.max(8, Math.min(rect.right + 8, window.innerWidth - 292))}px`;
+    explorerTooltip.style.top = `${Math.max(8, Math.min(rect.top - 6, window.innerHeight - 130))}px`;
+    explorerTooltip.classList.remove('hidden');
+  }
+  function hideExplorerTooltip() { explorerTooltip?.classList.add('hidden'); }
+  explorerInfo?.addEventListener('click', e => e.stopPropagation());
+  explorerInfo?.addEventListener('mouseenter', showExplorerTooltip);
+  explorerInfo?.addEventListener('mouseleave', hideExplorerTooltip);
+  explorerInfo?.addEventListener('focus', showExplorerTooltip);
+  explorerInfo?.addEventListener('blur', hideExplorerTooltip);
+  document.getElementById('author-sidecar-close')?.addEventListener('click', closeAuthorSidecar);
+  document.getElementById('institution-explorer')?.addEventListener('toggle', e => {
+    if (!e.currentTarget.open) closeAuthorSidecar();
+  });
   openAlexKeySave?.addEventListener('click', saveOpenAlexKey);
   openAlexKeyInput?.addEventListener('keydown', e => {
     if (e.key === 'Enter') {
@@ -376,27 +423,18 @@
     }
   });
   configureStoredOpenAlexKey();
-  rankSearchForm?.addEventListener('submit', e => {
-    e.preventDefault();
-    runInstitutionRank();
-  });
-  [rankInstitutionInput, rankTargetInput].forEach(input => {
+  [rankInstitutionInput].forEach(input => {
     input?.addEventListener('keydown', e => {
       if (e.key !== 'Enter') return;
       e.preventDefault();
-      runSearch(input === rankInstitutionInput ? 'rank-institution' : 'rank-target', input);
+      runSearch('rank-institution', input);
     });
   });
   rankInstitutionInput?.addEventListener('input', () => {
     if (rankSelection.institution?.display_name !== rankInstitutionInput.value.trim()) {
       rankSelection.institution = null;
-      renderRankResults([]);
-      renderRankSelectionStatus();
-    }
-  });
-  rankTargetInput?.addEventListener('input', () => {
-    if (rankSelection.target?.display_name !== rankTargetInput.value.trim()) {
-      rankSelection.target = null;
+      localStorage.removeItem(HOME_INSTITUTION_STORAGE);
+      renderHomeInstitution();
       renderRankResults([]);
       renderRankSelectionStatus();
     }
@@ -664,77 +702,80 @@
     arrow?.classList.add('expanded');
   }
 
-  async function toggleRankExpand(result, el) {
-    const arrow = el.querySelector('.rank-arrow');
-    const existingDetail = el.nextElementSibling;
-    if (existingDetail && existingDetail.classList.contains('rank-steps')) {
-      existingDetail.remove();
-      arrow?.classList.remove('expanded');
-      return;
-    }
+  function closeAuthorSidecar() {
+    selectedSuggestionId = null;
+    authorDetailRequestId += 1;
+    document.getElementById('author-sidecar')?.classList.add('hidden');
+    document.querySelectorAll('.rank-result.selected').forEach(el => el.classList.remove('selected'));
+  }
 
-    const detail = document.createElement('ol');
-    detail.className = 'rank-steps';
+  async function showAuthorSidecar(result) {
+    selectedSuggestionId = result.author.id;
+    const requestId = ++authorDetailRequestId;
+    document.querySelectorAll('.rank-result').forEach(el =>
+      el.classList.toggle('selected', el.dataset.authorId === selectedSuggestionId));
+    const sidecar = document.getElementById('author-sidecar');
+    const content = document.getElementById('author-sidecar-content');
+    sidecar?.classList.remove('hidden');
+    const author = result.author;
+    const topics = (author.topics || []).map(t => `<span class="author-topic">${escHtml(t)}</span>`).join('');
+    const links = [
+      author.openalex_url ? `<a href="${escAttr(author.openalex_url)}" target="_blank" rel="noopener">OpenAlex ↗</a>` : '',
+      author.orcid ? `<a href="${escAttr(author.orcid)}" target="_blank" rel="noopener">ORCID ↗</a>` : '',
+    ].filter(Boolean).join('');
+    const path = (result.steps || []).map(s =>
+      `<li><span class="step-people">${escHtml(s.from_name)} → ${escHtml(s.to_name)}</span>` +
+      `<span class="step-via">${escHtml(stepPhrase(s))}</span></li>`).join('');
     const evidence = result.affiliation_evidence;
-    if (result.author.openalex_url) {
-      detail.innerHTML +=
-        `<li><span class="step-people">Author profile</span>` +
-        `<span class="step-via"><a href="${escAttr(result.author.openalex_url)}" target="_blank" rel="noopener">OpenAlex profile</a></span></li>`;
+    const affiliationName = evidence?.display_name || result.matched_institution || '';
+    const affiliationHtml = affiliationName
+      ? `<p class="author-path-affiliation">At ${escHtml(affiliationName)}</p>`
+      : '';
+    if (content) content.innerHTML = `<article class="author-card"><h2>${escHtml(author.display_name)}</h2>` +
+      `<div class="author-affiliation">${escHtml(result.matched_institution || author.institution || 'Institution not listed')}</div>` +
+      `<div class="author-topic-list">${topics || '<span class="author-topic">Topics not listed</span>'}</div>` +
+      `<div class="author-metrics"><div class="author-metric"><strong>${(author.works_count || 0).toLocaleString()}</strong><span>works</span></div>` +
+      `<div class="author-metric"><strong>${(author.cited_by_count || 0).toLocaleString()}</strong><span>citations</span></div></div>` +
+      `<div class="author-links">${links}</div>` +
+      `<section class="author-section"><h3>Representative research</h3><div id="sidecar-works" class="sidecar-loading"><span class="mini-spinner"></span>Loading works…</div></section>` +
+      `<section class="author-section"><h3>Why this researcher appears</h3>${affiliationHtml}<ol class="degrees-steps">${path || '<li><span class="step-people">Connection details are unavailable.</span></li>'}</ol></section></article>`;
+    const works = await loadTopWorks(author.id);
+    if (requestId !== authorDetailRequestId || selectedSuggestionId !== author.id) return;
+    const worksEl = document.getElementById('sidecar-works');
+    if (worksEl) {
+      worksEl.className = '';
+      worksEl.innerHTML = works.length ? renderWorksTable(works.slice(0, 5)) : '<em>No representative works found.</em>';
     }
-    if (evidence) {
-      const years = evidence.years?.length ? evidence.years.join(', ') : 'years not listed';
-      const evidenceLabel = evidence.openalex_url
-        ? `<a href="${escAttr(evidence.openalex_url)}" target="_blank" rel="noopener">${escHtml(evidence.display_name || result.matched_institution)}</a>`
-        : escHtml(evidence.display_name || result.matched_institution);
-      detail.innerHTML +=
-        `<li><span class="step-people">Affiliation evidence</span>` +
-        `<span class="step-via">${evidenceLabel} · ${escHtml(years)}</span></li>`;
-    }
-    if (!result.steps.length) {
-      detail.innerHTML += '<li>No path details available.</li>';
-    } else {
-      detail.innerHTML += result.steps.map(s =>
-        `<li><span class="step-people">${escHtml(s.from_name)} → ${escHtml(s.to_name)}</span>` +
-        `<span class="step-via">${escHtml(stepPhrase(s))}</span></li>`
-      ).join('');
-    }
-    el.after(detail);
-    arrow?.classList.add('expanded');
   }
 
   async function runInstitutionRank() {
+    if (explorerUpdating) { explorerRefreshPending = true; return; }
     if (state.isLoading) return;
-    if (!rankSelection.institution && !rankSelection.target) {
-      setRankStatus('Search and select an institution and a target academic.');
-      return;
-    }
     if (!rankSelection.institution) {
       setRankStatus('Search and select an institution.');
       rankInstitutionInput?.focus();
       return;
     }
-    if (!rankSelection.target) {
-      setRankStatus('Search and select a target academic.');
-      rankTargetInput?.focus();
+    const originIds = [...state.origins].filter(id => !isWorkId(id));
+    if (!originIds.length) {
+      setRankStatus('Add a researcher you like to see suggestions.');
+      renderRankResults([]);
       return;
     }
 
-    setRankStatus('Ranking…');
-    renderRankResults([]);
+    setExplorerLoading(true);
+    const requestId = ++suggestionRequestId;
     try {
       const params = new URLSearchParams({
         institution: rankSelection.institution.display_name,
-        target: rankSelection.target.display_name,
         institution_id: rankSelection.institution.id,
-        target_id: rankSelection.target.id,
-        limit: '15',
-        candidate_pool: '15',
-        primary_only: rankPrimaryOnly?.checked ? 'true' : 'false',
+        limit: '10',
+        candidate_pool: '30',
       });
-      getEnabledEdges().forEach(e => params.append('edges', e));
+      originIds.forEach(id => params.append('origin_ids', id));
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), RANK_TIMEOUT_MS);
-      const r = await fetch(`${API_BASE}/api/institution-rank?${params}`, {
+      const r = await fetch(`${API_BASE}/api/institution-suggestions?${params}`, {
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -747,24 +788,40 @@
         throw new Error(msg);
       }
       const data = await r.json();
-      if (data.message && !(data.results || []).length) {
-        setRankStatus(data.message);
+      if (requestId !== suggestionRequestId) return;
+      const results = data.results || [];
+      if (!results.length) {
+        setRankStatus(data.message ||
+          'We could not find a coauthor connection between researchers at your school and the researchers in your graph yet. Try adding more researchers you like.');
+        renderRankResults([]);
         return;
       }
       const inst = data.institution?.display_name || rankSelection.institution.display_name;
-      const targetName = data.target?.display_name || rankSelection.target.display_name;
-      const scope = data.primary_only ? 'current primary academics' : 'academics';
-      const omitted = data.unconnected_count || 0;
-      const omittedNote = omitted ? ` · ${omitted} candidate${omitted === 1 ? '' : 's'} omitted with no path found` : '';
       const cacheNote = data.message ? ' · using cached local data' : '';
-      setRankStatus(`${inst} ${scope} closest to ${targetName}${omittedNote}${cacheNote}`);
-      renderRankResults(data.results || []);
+      setRankStatus(`Researchers at ${inst} whose work is closest to the people in your graph${cacheNote}`);
+      renderRankResults(results);
     } catch (err) {
+      if (requestId !== suggestionRequestId) return;
       const timedOut = err?.name === 'AbortError';
       setRankStatus(timedOut
-        ? 'Ranking did not finish within 30 seconds. Try fewer edge types or turn off current-primary filtering.'
+        ? 'Suggestions did not finish within 30 seconds. Try refreshing; cached connections make the next attempt faster.'
         : (err?.message || 'Ranking failed. Please try again.'));
+    } finally {
+      if (requestId === suggestionRequestId) setExplorerLoading(false);
+      if (explorerRefreshPending) {
+        explorerRefreshPending = false;
+        setTimeout(runInstitutionRank, 0);
+      }
     }
+  }
+
+  function setExplorerLoading(loading) {
+    explorerUpdating = loading;
+    document.getElementById('explorer-loading')?.classList.toggle('hidden', !loading);
+    document.getElementById('rank-status')?.classList.toggle('hidden', loading);
+    document.getElementById('rank-results')?.classList.toggle('is-refreshing', loading);
+    const refresh = document.getElementById('rank-refresh');
+    if (refresh) refresh.disabled = loading;
   }
 
   function setRankStatus(message) {
@@ -775,23 +832,27 @@
   function renderRankSelectionStatus() {
     const parts = [];
     if (rankSelection.institution) parts.push(`Institution: ${rankSelection.institution.display_name}`);
-    if (rankSelection.target) parts.push(`Target: ${rankSelection.target.display_name}`);
+    if (rankSelection.institution) parts.push('Suggestions update when your researcher graph changes.');
     setRankStatus(parts.join(' · '));
   }
 
   function rankLabel(result) {
-    if (!result.found) return 'no path found';
-    return `${result.hops} degree${result.hops === 1 ? '' : 's'}`;
+    if (!result.found) return 'no connection found';
+    return `${result.hops} coauthor step${result.hops === 1 ? '' : 's'} away`;
   }
 
   function renderRankResults(results) {
     const list = document.getElementById('rank-results');
     if (!list) return;
     list.innerHTML = '';
+    currentSuggestions = results;
+    if (selectedSuggestionId && !results.some(r => r.author.id === selectedSuggestionId)) closeAuthorSidecar();
     if (!results.length) return;
     results.forEach((result, index) => {
       const li = document.createElement('li');
       li.className = 'rank-result';
+      li.dataset.authorId = result.author.id;
+      if (result.author.id === selectedSuggestionId) li.classList.add('selected');
       const author = result.author;
       const matchedInstitution = result.matched_institution || author.institution || 'Selected institution';
       const primaryInstitution = author.institution || 'Unknown primary affiliation';
@@ -801,34 +862,23 @@
       li.innerHTML =
         `<div class="rank-row">` +
         `<span class="rank-num">${index + 1}</span>` +
-        `<button type="button" class="rank-main">` +
+        `<div class="rank-main">` +
         `<strong>${escHtml(author.display_name)}</strong>` +
-        `<small>${escHtml(matchedInstitution)}${escHtml(primaryNote)} · ` +
-        `${author.cited_by_count.toLocaleString()} citations</small>` +
-        `</button>` +
-        `<span class="rank-distance"><span class="rank-arrow">&#9660;</span> ${escHtml(rankLabel(result))}</span>` +
-        `<button type="button" class="rank-graph-btn">Graph</button>` +
+        `<small>${escHtml((author.topics || []).join(' · ') || matchedInstitution)}${escHtml(primaryNote)}</small>` +
+        `</div><div class="rank-actions">` +
+        `<span class="rank-distance">${escHtml(rankLabel(result))}</span>` +
+        `<button type="button" class="rank-view-btn">View author</button>` +
+        `<button type="button" class="rank-graph-btn">Add →</button></div>` +
         `</div>`;
-      li.querySelector('.rank-main').addEventListener('click', () => toggleRankExpand(result, li));
-      li.querySelector('.rank-distance').addEventListener('click', () => toggleRankExpand(result, li));
+      li.querySelector('.rank-view-btn').addEventListener('click', () => showAuthorSidecar(result));
       li.querySelector('.rank-graph-btn').addEventListener('click', () => graphRankResult(result));
       list.appendChild(li);
     });
   }
 
   async function graphRankResult(result) {
-    if (state.isLoading || !rankSelection.target) return;
-    const target = rankSelection.target;
+    if (state.isLoading) return;
     const author = result.author;
-    if (!state.origins.has(target.id)) {
-      await addResearcher({
-        id: target.id,
-        display_name: target.display_name,
-        institution: target.institution,
-        works_count: target.works_count || 0,
-        cited_by_count: target.cited_by_count || 0,
-      });
-    }
     if (!state.origins.has(author.id)) {
       await addResearcher({
         id: author.id,
@@ -867,13 +917,14 @@
 
   function onAddFromModal(item) {
     if (searchSession.entityType === 'rank-institution') {
+      suggestionRequestId += 1;
+      setExplorerLoading(false);
       rankSelection.institution = item;
       rankInstitutionInput.value = item.display_name;
+      localStorage.setItem(HOME_INSTITUTION_STORAGE, JSON.stringify(item));
+      renderHomeInstitution();
       renderRankSelectionStatus();
-    } else if (searchSession.entityType === 'rank-target') {
-      rankSelection.target = item;
-      rankTargetInput.value = item.display_name;
-      renderRankSelectionStatus();
+      setTimeout(runInstitutionRank, 0);
     } else if (searchSession.entityType === 'work') addWork(item);
     else addResearcher(item);
     searchSession.pageCache.clear();
@@ -1072,6 +1123,7 @@
     applyEdgeFade();
     renderDegrees();
     runLayout();
+    setTimeout(runInstitutionRank, 0);
   }
 
   // ── Add researcher ─────────────────────────────────────────────────────────
@@ -1080,7 +1132,7 @@
     searchInput.value = '';
     state.origins.add(author.id);
     addChip(author.id, author.display_name);
-    return startExpansion(author.id).then(saveState);
+    return startExpansion(author.id).then(() => { saveState(); return runInstitutionRank(); });
   }
 
   function addWork(work) {
@@ -1134,6 +1186,7 @@
       cy.elements().remove();
       state.pathNodes.clear();
       clearSavedState();
+      runInstitutionRank();
       return;
     }
 
@@ -1155,6 +1208,7 @@
     });
 
     saveState();
+    runInstitutionRank();
     runLayout();
   }
 

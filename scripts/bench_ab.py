@@ -6,9 +6,9 @@ working, baseline, working …). Runs never overlap, so the versions don't
 compete for API bandwidth; alternation gives both the same "API weather".
 
 The baseline is checked out into a temporary git worktree with its own
-isolated neighbor cache; only the OpenAlex credentials (openalex-key, mailto)
-from api-keys.json (git-ignored) are copied in so both sides use the same
-OpenAlex key without sharing a durable store. Servers and worktree are
+isolated neighbor cache. OpenAlex credentials are loaded from the working tree's
+`.env.local` and inherited by both servers, while Supabase connection variables are
+removed so neither side shares a durable store. Servers and worktree are
 cleaned up on exit.
 
 Usage:
@@ -24,7 +24,7 @@ credit budget.
 import argparse
 import asyncio
 import importlib.util
-import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -32,8 +32,10 @@ import time
 from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 
 REPO = Path(__file__).resolve().parent.parent
+load_dotenv(REPO / ".env.local", override=False)
 
 _spec = importlib.util.spec_from_file_location("bench_search", REPO / "scripts" / "bench_search.py")
 bench = importlib.util.module_from_spec(_spec)
@@ -55,9 +57,12 @@ async def _wait_healthy(base: str, timeout: float = 20.0) -> None:
 
 
 def _start_server(cwd: Path, port: int) -> subprocess.Popen:
+    env = os.environ.copy()
+    env.pop("SUPABASE_POOLER_CONNECTION_STRING", None)
+    env.pop("SUPABASE_DB_URL", None)  # keep old baseline refs isolated too
     return subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "backend.app:app", "--port", str(port)],
-        cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
 
@@ -97,17 +102,6 @@ async def main() -> None:
     try:
         subprocess.run(["git", "worktree", "add", "--detach", str(worktree), args.ref],
                        cwd=REPO, check=True, capture_output=True)
-        # api-keys.json is git-ignored, so the worktree lacks it — copy in only
-        # the OpenAlex credentials so both sides hit OpenAlex with the same key
-        # (and rate limits). Anything else (e.g. supabase-db-url) is dropped so
-        # the baseline can't attach to the same durable store as the working
-        # tree and defeat the isolated-cache premise.
-        keys = REPO / "api-keys.json"
-        if keys.exists():
-            data = json.loads(keys.read_text())
-            slim = {k: data[k] for k in ("openalex-key", "mailto") if k in data}
-            (worktree / "api-keys.json").write_text(json.dumps(slim))
-
         print(f"baseline: {args.ref} ({ref_sha}) on :{args.port_base}")
         print(f"working:  {REPO} on :{args.port_work}")
         procs.append(_start_server(worktree, args.port_base))

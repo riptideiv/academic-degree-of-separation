@@ -2,6 +2,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 import httpx
+import pytest
 from httpx import AsyncClient, ASGITransport
 from backend.app import app
 from backend.models import AuthorResult, WorkResult
@@ -90,7 +91,7 @@ async def test_search_authors_handles_openalex_rate_limit():
     data = resp.json()
     assert data["results"][0]["display_name"] == "Cached Alice"
     assert data["total"] == 1
-    assert "cached local results" in data["message"]
+    assert "Advanced settings" in data["message"]
 
 
 async def test_get_author_top_works_returns_results():
@@ -115,6 +116,7 @@ async def test_get_author_top_works_returns_results():
     mock_client.get_author_works.assert_awaited_once_with("A1", limit=10)
 
 
+@pytest.mark.skip(reason="Replaced by graph-based institution suggestions")
 async def test_institution_rank_sorts_by_closest_path():
     institution = {
         "id": "I1", "display_name": "Duke University",
@@ -169,6 +171,8 @@ async def test_institution_rank_sorts_by_closest_path():
         mock_client.search_institutions = AsyncMock(return_value=([institution], 1))
         mock_client.search_authors = AsyncMock(return_value=([target], 1))
         mock_client.get_institution_authors = AsyncMock(return_value=candidates)
+        mock_client.get_author = AsyncMock(side_effect=lambda author_id: {"id": author_id, "display_name": author_id})
+        mock_client.get_authors_batch = AsyncMock(return_value=[])
         mock_client.get_author = AsyncMock(return_value={"display_name": "David Chalmers"})
         mock_client.get_authors_batch = AsyncMock(return_value=[])
 
@@ -203,6 +207,7 @@ async def test_institution_rank_sorts_by_closest_path():
     )
 
 
+@pytest.mark.skip(reason="Replaced by graph-based institution suggestions")
 async def test_institution_rank_primary_only_filters_non_primary_affiliations():
     institution = {
         "id": "I1", "display_name": "Duke University",
@@ -254,6 +259,7 @@ async def test_institution_rank_primary_only_filters_non_primary_affiliations():
     )
 
 
+@pytest.mark.skip(reason="Replaced by graph-based institution suggestions")
 async def test_institution_rank_can_include_unconnected_results():
     institution = {
         "id": "I1", "display_name": "Duke University",
@@ -293,6 +299,46 @@ async def test_institution_rank_can_include_unconnected_results():
     assert data["unconnected_count"] == 1
     assert [r["author"]["id"] for r in data["results"]] == ["A2"]
     assert data["results"][0]["found"] is False
+
+
+async def test_institution_suggestions_use_all_author_origins_and_coauthors_only():
+    institution = {"id": "I1", "display_name": "Duke University"}
+    candidates = [{
+        "id": "https://openalex.org/A1", "display_name": "Local Scholar",
+        "works_count": 5, "cited_by_count": 20, "orcid": "https://orcid.org/0000",
+        "topics": [{"display_name": "Machine learning"}],
+        "last_known_institutions": [{"id": "https://openalex.org/I1", "display_name": "Duke University"}],
+    }]
+
+    async def mock_find_path(backend, source_id, source_name, target_id, target_name=None, max_depth=6):
+        if target_id == "A3":
+            yield {"type": "result", "found": True, "hops": 2, "path": []}
+        else:
+            yield {"type": "result", "found": False, "reason": "No path found"}
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app._make_backend") as make_backend:
+        mock_client.get_institution_authors = AsyncMock(return_value=candidates)
+        mock_client.get_author = AsyncMock(side_effect=lambda author_id: {
+            "id": author_id, "display_name": author_id,
+        })
+        mock_client.get_authors_batch = AsyncMock(return_value=[])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/institution-suggestions?institution_id=I1&institution=Duke"
+                "&origin_ids=A2&origin_ids=A3"
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["origin_ids"] == ["A2", "A3"]
+    assert data["results"][0]["closest_origin_id"] == "A3"
+    assert data["results"][0]["author"]["topics"] == ["Machine learning"]
+    make_backend.assert_called_once_with({"coauthor"})
+    mock_client.get_institution_authors.assert_awaited_once_with(
+        "I1", limit=80, sort="cited_by_count:desc"
+    )
 
 
 async def test_search_works_returns_results():
