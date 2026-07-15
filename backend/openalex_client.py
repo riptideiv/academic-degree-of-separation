@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from collections import OrderedDict
 
@@ -45,6 +46,7 @@ class OpenAlexClient:
         self._institution_authors_cache_max = 100
         self._search_cache: "OrderedDict[tuple, tuple[list, int]]" = OrderedDict()
         self._search_cache_max = 200
+        self._request_count = 0
 
     @property
     def has_api_key(self) -> bool:
@@ -56,8 +58,8 @@ class OpenAlexClient:
 
     def _concurrency_limit(self) -> int:
         """Max concurrent OpenAlex requests. OPENALEX_CONCURRENCY overrides; else
-        key-aware (15 with a key, 8 keyless)."""
-        default = 15 if self._api_key else 8
+        defaults to 25."""
+        default = 25
         raw = os.environ.get("OPENALEX_CONCURRENCY")
         if raw:
             try:
@@ -85,6 +87,7 @@ class OpenAlexClient:
             self._http = None
 
     async def _get(self, url: str, params: dict, max_attempts: int = 5) -> dict:
+        self._request_count += 1
         params = dict(params)
         if self._api_key:
             params["api_key"] = self._api_key
@@ -105,6 +108,10 @@ class OpenAlexClient:
             resp.raise_for_status()
             return resp.json()
         resp.raise_for_status()
+
+    @property
+    def request_count(self) -> int:
+        return self._request_count
 
     def _is_budget_exhausted(self, resp: httpx.Response) -> bool:
         retry_after = resp.headers.get("Retry-After")
@@ -277,11 +284,10 @@ class OpenAlexClient:
                 "select": "id,title,authorships,referenced_works",
             })
             for chunk in chunk_list
-        ], return_exceptions=True)
+        ])
         combined: list[dict] = []
         for r in results:
-            if not isinstance(r, Exception):
-                combined.extend(r.get("results", []))
+            combined.extend(r.get("results", []))
         return combined
 
     async def get_works_batch(self, work_ids: list[str], limit: int = 200) -> list[dict]:
@@ -297,11 +303,10 @@ class OpenAlexClient:
                 "select": "id,title,authorships",
             })
             for chunk in chunk_list
-        ], return_exceptions=True)
+        ])
         combined: list[dict] = []
         for r in results:
-            if not isinstance(r, Exception):
-                combined.extend(r.get("results", []))
+            combined.extend(r.get("results", []))
         return combined
 
     async def get_work(self, work_id: str) -> dict:
@@ -354,11 +359,10 @@ class OpenAlexClient:
                 "select": "id,authorships,referenced_works",
             })
             for chunk in chunk_list
-        ], return_exceptions=True)
+        ])
         combined: list[dict] = []
         for r in results:
-            if not isinstance(r, Exception):
-                combined.extend(r.get("results", []))
+            combined.extend(r.get("results", []))
         return combined
 
     async def get_authors_batch(self, author_ids: list[str]) -> list[dict]:

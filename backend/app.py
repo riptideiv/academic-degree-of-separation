@@ -1,8 +1,10 @@
 import asyncio
 import json
+import inspect
 import logging
 import math
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -72,7 +74,7 @@ RANK_EFFECTIVE_POOL_MAX = 30
 RANK_FETCH_LIMIT_MAX = 80
 RANK_TOTAL_TIMEOUT_S = 28
 RANK_CANDIDATE_TIMEOUT_S = 8
-RANK_CONCURRENCY = 4
+RANK_CONCURRENCY = 8
 RANK_MAX_DEPTH = 4
 
 
@@ -155,6 +157,8 @@ async def _collect_path(
     from_name: str,
     to_id: str,
     max_depth: int = 6,
+    hydrate: bool = True,
+    to_name: str | None = None,
 ) -> dict:
     """Run bidirectional BFS; return the found path's nodes/edges plus hop count.
 
@@ -162,17 +166,19 @@ async def _collect_path(
     metadata (found, hops, and both endpoint names) so the caller can emit a `path`
     SSE event without re-deriving any of it.
     """
-    if _is_work_id(to_id):
-        to_obj = await _client.get_work(to_id)
-        to_name = to_obj.get("title", to_id)
-    else:
-        try:
-            to_obj = await _client.get_author(to_id)
-        except Exception as exc:
-            if not _is_rate_limited(exc):
-                raise
-            to_obj = _local_index.author_record(to_id)
-        to_name = to_obj.get("display_name", to_id)
+    to_obj: dict | None = None
+    if to_name is None:
+        if _is_work_id(to_id):
+            to_obj = await _client.get_work(to_id)
+            to_name = to_obj.get("title", to_id)
+        else:
+            try:
+                to_obj = await _client.get_author(to_id)
+            except Exception as exc:
+                if not _is_rate_limited(exc):
+                    raise
+                to_obj = _local_index.author_record(to_id)
+            to_name = to_obj.get("display_name", to_id)
 
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -223,7 +229,7 @@ async def _collect_path(
     # single batched lookup before returning — authors via get_authors_batch,
     # and any work-typed endpoint (at most from_id/to_id, never a mid-path node)
     # via get_work, reusing the to_id fetch already done above where possible.
-    author_node_ids = [n["id"] for n in nodes if n["type"] != "work"]
+    author_node_ids = [n["id"] for n in nodes if n["type"] != "work"] if hydrate else []
     if author_node_ids:
         try:
             authors = await _client.get_authors_batch(author_node_ids)
@@ -246,8 +252,10 @@ async def _collect_path(
     async def _work_details(n: dict) -> dict:
         return to_obj if n["id"] == to_id else await _client.get_work(n["id"])
 
-    work_nodes = [n for n in nodes if n["type"] == "work"]
+    work_nodes = [n for n in nodes if n["type"] == "work"] if hydrate else []
     if work_nodes:
+        if to_obj is None and any(n["id"] == to_id for n in work_nodes):
+            to_obj = await _client.get_work(to_id)
         details = await asyncio.gather(*[_work_details(n) for n in work_nodes])
         for n, w in zip(work_nodes, details):
             n["cited_by_count"] = w.get("cited_by_count", 0)
@@ -414,6 +422,9 @@ async def institution_rank(
     if not origins:
         return {"institution": inst, "results": [], "message": "Add a researcher you like to the graph first."}
 
+    rank_started = time.perf_counter()
+    call_count_start = _client.request_count
+    cache_hits_start, cache_misses_start = _cache.stats()
     backend = _make_backend({"coauthor"})
     effective_pool = min(candidate_pool, RANK_EFFECTIVE_POOL_MAX)
     fetch_limit = min(
@@ -435,6 +446,16 @@ async def institution_rank(
             raise
     candidates = [a for a in candidates if _has_primary_inst(a, inst["id"])]
     candidates = candidates[:effective_pool]
+    candidate_ids = [_short_id(a["id"]) for a in candidates if _short_id(a["id"]) not in origins]
+    if candidate_ids:
+        prefetch = backend.get_neighbors_batch(candidate_ids)
+        if inspect.isawaitable(prefetch):
+            await prefetch
+    origin_records = await _client.get_authors_batch(origins)
+    origin_names = {
+        _short_id(author["id"]): author.get("display_name", _short_id(author["id"]))
+        for author in origin_records
+    }
     started_count = len([a for a in candidates if _short_id(a["id"]) not in origins])
     rank_errors = 0
     rank_timeouts = 0
@@ -444,7 +465,10 @@ async def institution_rank(
         author_id = _short_id(author["id"])
         author_name = author.get("display_name", author_id)
         paths = await asyncio.gather(*[
-            _collect_path(backend, author_id, author_name, origin_id, max_depth=max_depth)
+            _collect_path(
+                backend, author_id, author_name, origin_id, max_depth=max_depth,
+                hydrate=False, to_name=origin_names.get(origin_id, origin_id),
+            )
             for origin_id in origins
         ])
         found_paths = [(origin_id, path) for origin_id, path in zip(origins, paths) if path["found"]]
@@ -540,6 +564,13 @@ async def institution_rank(
         response["message"] = (
             f"Ranked {len(ranked)} of {started_count} candidates within the time budget."
         )
+    call_count = _client.request_count - call_count_start
+    log.info(
+        "institution_rank institution=%s origins=%d candidates=%d ranked=%d calls=%d cache_hits=%d cache_misses=%d wall_ms=%d",
+        inst["id"], len(origins), started_count, len(ranked), call_count,
+        _cache.stats()[0] - cache_hits_start, _cache.stats()[1] - cache_misses_start,
+        round((time.perf_counter() - rank_started) * 1000),
+    )
     return response
 
 

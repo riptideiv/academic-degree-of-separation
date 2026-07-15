@@ -30,6 +30,53 @@ log = logging.getLogger(__name__)
 
 # How often the background flush tasks (JSON / Supabase) persist pending entries.
 FLUSH_INTERVAL_S = 5.0
+AUTHOR_EDGE_TYPES = {"coauthor", "citation", "institution"}
+WORK_EDGE_TYPES = {"authorship", "citation"}
+Ring = dict[str, list[Connection]]
+
+
+def merge_rings(existing: Ring | None, incoming: Ring) -> Ring:
+    """Return a monotonic per-edge-type merge without mutating either input."""
+    merged = dict(existing or {})
+    merged.update(incoming)
+    return merged
+
+
+def normalize_ring(value: Ring | list[Connection], *, is_work: bool = False) -> Ring:
+    return value if isinstance(value, dict) else decode_ring(value, is_work=is_work)
+
+
+def decode_ring(raw: object, *, is_work: bool = False) -> Ring:
+    """Decode current bucket entries and legacy flat-list entries."""
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    if isinstance(raw, list):
+        edge_types = WORK_EDGE_TYPES if is_work else AUTHOR_EDGE_TYPES
+        ring: Ring = {edge_type: [] for edge_type in edge_types}
+        for item in raw:
+            conn = item if isinstance(item, Connection) else Connection(**item)
+            ring.setdefault(conn.connection_type, []).append(conn)
+        return ring
+    if not isinstance(raw, dict):
+        raise TypeError("neighbor ring must be a list or object")
+    return {
+        edge_type: [item if isinstance(item, Connection) else Connection(**item) for item in items]
+        for edge_type, items in raw.items()
+        if isinstance(items, list)
+    }
+
+
+def encode_ring(ring: Ring) -> dict[str, list[dict]]:
+    return {
+        edge_type: [conn.model_dump() for conn in connections]
+        for edge_type, connections in ring.items()
+    }
+
+
+def select_ring(ring: Ring, required: set[str]) -> list[Connection] | None:
+    if not required.issubset(ring):
+        return None
+    return [conn for edge_type in required for conn in ring[edge_type]]
 
 
 class NeighborStore:
@@ -42,11 +89,11 @@ class NeighborStore:
     async def open(self) -> None:
         """Prepare the store (open connections, load files, start background tasks)."""
 
-    async def fetch(self, ids: list[str]) -> dict[str, list[Connection]]:
+    async def fetch(self, ids: list[str]) -> dict[str, Ring]:
         """Return the durable entries for `ids` (absent ids simply omitted)."""
         return {}
 
-    def record(self, entries: dict[str, list[Connection]]) -> None:
+    def record(self, entries: dict[str, Ring]) -> None:
         """Persist newly-fetched entries (non-blocking)."""
 
     async def flush(self) -> None:
@@ -72,7 +119,7 @@ class JsonNeighborStore(NeighborStore):
 
     def __init__(self, path: Path):
         self._path = path
-        self._data: dict[str, list[Connection]] = {}
+        self._data: dict[str, Ring] = {}
         self._dirty = False
         self._flush_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -83,18 +130,26 @@ class JsonNeighborStore(NeighborStore):
         if self._path.exists():
             try:
                 raw = json.loads(self._path.read_text())
-                self._data = {aid: [Connection(**c) for c in conns] for aid, conns in raw.items()}
+                loaded: dict[str, Ring] = {}
+                for aid, value in raw.items():
+                    try:
+                        loaded[aid] = decode_ring(value, is_work=aid.startswith("W"))
+                    except Exception as exc:
+                        log.warning("Skipping corrupt neighbor-cache entry %s: %s", aid, exc)
+                self._data = loaded
             except Exception as exc:
                 log.warning("Could not load neighbor cache from disk: %s", exc)
         if self._flush_task is None:
             self._stop = asyncio.Event()
             self._flush_task = asyncio.create_task(self._flush_loop())
 
-    async def fetch(self, ids: list[str]) -> dict[str, list[Connection]]:
+    async def fetch(self, ids: list[str]) -> dict[str, Ring]:
         return {i: self._data[i] for i in ids if i in self._data}
 
-    def record(self, entries: dict[str, list[Connection]]) -> None:
-        self._data.update(entries)
+    def record(self, entries: dict[str, Ring]) -> None:
+        for aid, value in entries.items():
+            ring = normalize_ring(value, is_work=aid.startswith("W"))
+            self._data[aid] = merge_rings(self._data.get(aid), ring)
         self._dirty = True
 
     async def _flush_loop(self) -> None:
@@ -127,9 +182,7 @@ class JsonNeighborStore(NeighborStore):
             snapshot = dict(self._data)
 
             def _write() -> None:
-                serialisable = {
-                    aid: [c.model_dump() for c in conns] for aid, conns in snapshot.items()
-                }
+                serialisable = {aid: encode_ring(ring) for aid, ring in snapshot.items()}
                 self._path.write_text(json.dumps(serialisable))
 
             try:
@@ -173,13 +226,17 @@ class SupabaseNeighborStore(NeighborStore):
         INSERT INTO neighbor_cache (author_id, connections, updated_at)
         VALUES ($1, $2, now())
         ON CONFLICT (author_id)
-        DO UPDATE SET connections = EXCLUDED.connections, updated_at = now()
+        DO UPDATE SET connections = CASE
+            WHEN jsonb_typeof(neighbor_cache.connections) = 'object'
+            THEN neighbor_cache.connections || EXCLUDED.connections
+            ELSE EXCLUDED.connections
+        END, updated_at = now()
     """
 
     def __init__(self, dsn: str):
         self._dsn = dsn
         self._pool = None
-        self._pending: dict[str, list[Connection]] = {}
+        self._pending: dict[str, Ring] = {}
         self._flush_task: asyncio.Task | None = None
 
     async def open(self) -> None:
@@ -200,7 +257,7 @@ class SupabaseNeighborStore(NeighborStore):
         self._flush_task = asyncio.create_task(self._flush_loop())
         log.info("Supabase neighbor store ready (lazy per-id fetch)")
 
-    async def fetch(self, ids: list[str]) -> dict[str, list[Connection]]:
+    async def fetch(self, ids: list[str]) -> dict[str, Ring]:
         if self._pool is None or not ids:
             return {}
         async with self._pool.acquire() as conn:
@@ -208,16 +265,23 @@ class SupabaseNeighborStore(NeighborStore):
                 "SELECT author_id, connections FROM neighbor_cache WHERE author_id = ANY($1::text[])",
                 ids,
             )
-        result: dict[str, list[Connection]] = {}
+        result: dict[str, Ring] = {}
         for row in rows:
             conns = row["connections"]
             if isinstance(conns, str):  # jsonb may come back as text
                 conns = json.loads(conns)
-            result[row["author_id"]] = [Connection(**c) for c in conns]
+            try:
+                result[row["author_id"]] = decode_ring(
+                    conns, is_work=row["author_id"].startswith("W")
+                )
+            except Exception as exc:
+                log.warning("Skipping corrupt Supabase neighbor-cache entry %s: %s", row["author_id"], exc)
         return result
 
-    def record(self, entries: dict[str, list[Connection]]) -> None:
-        self._pending.update(entries)
+    def record(self, entries: dict[str, Ring]) -> None:
+        for aid, value in entries.items():
+            ring = normalize_ring(value, is_work=aid.startswith("W"))
+            self._pending[aid] = merge_rings(self._pending.get(aid), ring)
 
     async def _flush_loop(self) -> None:
         try:
@@ -235,14 +299,14 @@ class SupabaseNeighborStore(NeighborStore):
         batch = self._pending
         self._pending = {}
         records = [
-            (aid, json.dumps([c.model_dump() for c in conns])) for aid, conns in batch.items()
+            (aid, json.dumps(encode_ring(ring))) for aid, ring in batch.items()
         ]
         try:
             async with self._pool.acquire() as conn:
                 await conn.executemany(self._UPSERT, records)
         except Exception:
-            for aid, conns in batch.items():  # requeue for the next tick
-                self._pending.setdefault(aid, conns)
+            for aid, ring in batch.items():  # requeue for the next tick
+                self._pending[aid] = merge_rings(ring, self._pending.get(aid, {}))
             log.exception("Failed to flush %d neighbor-cache entries", len(records))
 
     async def clear(self) -> None:
@@ -273,37 +337,76 @@ class NeighborCache:
     def __init__(self, store: NeighborStore | None = None, max_size: int | None = None):
         self._store = store
         self._max = max_size
-        self._mem: "OrderedDict[str, list[Connection]]" = OrderedDict()
+        self._mem: "OrderedDict[str, Ring]" = OrderedDict()
+        self._inflight: dict[str, tuple[asyncio.Future, frozenset[str]]] = {}
+        self._hits = 0
+        self._misses = 0
 
-    def get_memory(self, id_: str) -> list[Connection] | None:
+    def get_memory(self, id_: str, required: set[str]) -> list[Connection] | None:
         """Return the cached entry for `id_` (LRU-touch), or None if not resident."""
-        conns = self._mem.get(id_)
-        if conns is not None:
+        ring = self._mem.get(id_)
+        if ring is not None:
             self._mem.move_to_end(id_)
-        return conns
+            selected = select_ring(ring, required)
+            if selected is not None:
+                self._hits += 1
+                return selected
+        self._misses += 1
+        return None
 
-    def _put_memory(self, id_: str, conns: list[Connection]) -> None:
-        self._mem[id_] = conns
+    def stats(self) -> tuple[int, int]:
+        return self._hits, self._misses
+
+    def _put_memory(self, id_: str, ring: Ring) -> None:
+        self._mem[id_] = merge_rings(self._mem.get(id_), ring)
         self._mem.move_to_end(id_)
         if self._max is not None:
             while len(self._mem) > self._max:
                 self._mem.popitem(last=False)
 
-    async def fetch_from_store(self, ids: list[str]) -> dict[str, list[Connection]]:
+    async def fetch_from_store(
+        self, ids: list[str], required_by_id: dict[str, set[str]]
+    ) -> dict[str, list[Connection]]:
         """Consult the durable store for `ids`, populating memory with any hits."""
         if self._store is None or not ids:
             return {}
         found = await self._store.fetch(ids)
-        for i, conns in found.items():
-            self._put_memory(i, conns)
-        return found
+        result: dict[str, list[Connection]] = {}
+        for i, value in found.items():
+            ring = normalize_ring(value, is_work=i.startswith("W"))
+            self._put_memory(i, ring)
+            selected = select_ring(self._mem[i], required_by_id[i])
+            if selected is not None:
+                result[i] = selected
+        return result
 
-    def put(self, entries: dict[str, list[Connection]]) -> None:
+    def put(self, entries: dict[str, Ring]) -> None:
         """Write freshly-fetched entries through to memory + the durable store."""
-        for i, conns in entries.items():
-            self._put_memory(i, conns)
+        normalized: dict[str, Ring] = {}
+        for i, value in entries.items():
+            ring = normalize_ring(value, is_work=i.startswith("W"))
+            self._put_memory(i, ring)
+            normalized[i] = ring
         if self._store is not None:
-            self._store.record(entries)
+            self._store.record(normalized)
+
+    def claim(self, id_: str, required: set[str]) -> tuple[bool, asyncio.Future]:
+        """Claim a remote fetch, or return a covering shared in-flight future."""
+        current = self._inflight.get(id_)
+        if current is not None and required.issubset(current[1]):
+            return False, current[0]
+        future = asyncio.get_running_loop().create_future()
+        # Incomparable fetches may overlap; monotonic bucket merges make that safe.
+        if current is None:
+            self._inflight[id_] = (future, frozenset(required))
+        return True, future
+
+    def finish(self, id_: str, future: asyncio.Future, *, success: bool = True) -> None:
+        current = self._inflight.get(id_)
+        if current is not None and current[0] is future:
+            self._inflight.pop(id_, None)
+        if not future.done():
+            future.set_result(success)
 
     async def clear(self) -> None:
         self._mem.clear()

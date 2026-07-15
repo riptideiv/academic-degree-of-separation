@@ -312,7 +312,17 @@ async def test_institution_suggestions_use_all_author_origins_and_coauthors_only
 
     async def mock_find_path(backend, source_id, source_name, target_id, target_name=None, max_depth=6):
         if target_id == "A3":
-            yield {"type": "result", "found": True, "hops": 2, "path": []}
+            yield {"type": "result", "found": True, "hops": 1, "path": [
+                {
+                    "author_id": source_id, "author_name": source_name,
+                    "connection_to_next": "coauthor", "label": "Shared paper",
+                    "direction": None,
+                },
+                {
+                    "author_id": target_id, "author_name": target_name,
+                    "connection_to_next": None, "label": None, "direction": None,
+                },
+            ]}
         else:
             yield {"type": "result", "found": False, "reason": "No path found"}
 
@@ -324,6 +334,9 @@ async def test_institution_suggestions_use_all_author_origins_and_coauthors_only
             "id": author_id, "display_name": author_id,
         })
         mock_client.get_authors_batch = AsyncMock(return_value=[])
+        mock_client.request_count = 0
+        backend = make_backend.return_value
+        backend.get_neighbors_batch = AsyncMock(return_value={"A1": []})
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get(
                 "/api/institution-suggestions?institution_id=I1&institution=Duke"
@@ -335,10 +348,14 @@ async def test_institution_suggestions_use_all_author_origins_and_coauthors_only
     assert data["origin_ids"] == ["A2", "A3"]
     assert data["results"][0]["closest_origin_id"] == "A3"
     assert data["results"][0]["author"]["topics"] == ["Machine learning"]
+    assert data["results"][0]["steps"][0]["label"] == "Shared paper"
     make_backend.assert_called_once_with({"coauthor"})
     mock_client.get_institution_authors.assert_awaited_once_with(
         "I1", limit=80, sort="cited_by_count:desc"
     )
+    backend.get_neighbors_batch.assert_awaited_once_with(["A1"])
+    mock_client.get_authors_batch.assert_awaited_once_with(["A2", "A3"])
+    mock_client.get_author.assert_not_awaited()
 
 
 async def test_search_works_returns_results():

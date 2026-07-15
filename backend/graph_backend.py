@@ -3,7 +3,7 @@ import logging
 from abc import ABC, abstractmethod
 
 from backend.models import Connection
-from backend.neighbor_store import NeighborCache
+from backend.neighbor_store import NeighborCache, Ring, select_ring
 from backend.openalex_client import OpenAlexClient, _short_id
 
 log = logging.getLogger(__name__)
@@ -53,16 +53,9 @@ class OpenAlexBackend(GraphBackend):
         self._client = client
         self._edge_types = edge_types if edge_types is not None else ALL_EDGE_TYPES
         self._work_edge_types = work_edge_types if work_edge_types is not None else ALL_WORK_EDGE_TYPES
-        # Shared ring cache: bounded LRU in front of a durable store. Rings hold all
-        # edge types (ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES) so each id is fetched once
-        # and reused regardless of which edge types are active. Default (no store,
-        # unbounded) keeps the original always-in-memory behavior for tests.
+        # Shared ring cache: each successfully fetched edge type occupies its own
+        # bucket, so specialized backends can reuse and monotonically extend rings.
         self._cache = neighbor_cache if neighbor_cache is not None else NeighborCache()
-        # Deduplicate overlapping cache misses from parallel path searches: the
-        # first batch to need an id owns its fetch (a Future in _inflight);
-        # concurrent batches await that future for shared ids while fetching
-        # their own un-shared ids immediately.
-        self._inflight: dict[str, asyncio.Future] = {}
 
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         tasks = []
@@ -175,21 +168,20 @@ class OpenAlexBackend(GraphBackend):
         self, ids: list[str], cached_only: bool = False
     ) -> dict[str, list[Connection]]:
         """
-        Return neighbors for all ids (author or work). Reads walk the cache layers
-        in order — in-memory LRU, then the durable store, then OpenAlex — with each
-        id fetched under ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so its ring is complete;
-        results are filtered to the type-appropriate active set before returning
-        (self._work_edge_types for work ids, self._edge_types for author ids —
-        dispatched by OpenAlex ID prefix). With cached_only=True (the stitch pass)
-        OpenAlex is never consulted: only memory + the durable store are read, and
-        uncached ids resolve to [].
+        Read memory, durable storage, then OpenAlex. A cache hit must contain every
+        active edge-type bucket required for that id. With cached_only=True,
+        incomplete and absent rings resolve to [] without a remote fetch.
         """
         unique = sorted(set(ids))
         resolved: dict[str, list[Connection]] = {}
+        required = {
+            i: set(self._work_edge_types if _is_work_id(i) else self._edge_types)
+            for i in unique
+        }
 
         # 1) In-memory hits (sync, LRU-touch).
         for i in unique:
-            hit = self._cache.get_memory(i)
+            hit = self._cache.get_memory(i, required[i])
             if hit is not None:
                 resolved[i] = hit
 
@@ -197,101 +189,108 @@ class OpenAlexBackend(GraphBackend):
             # Memory + durable store only; no OpenAlex, no in-flight claims.
             misses = [i for i in unique if i not in resolved]
             if misses:
-                resolved.update(await self._cache.fetch_from_store(misses))
+                resolved.update(await self._cache.fetch_from_store(misses, required))
         else:
             # 2) Claim ids nobody is fetching; collect futures for ids already
             #    in flight. A future resolving to None means its owner failed;
             #    waiters re-enter the claim loop and fetch those ids themselves.
-            loop = asyncio.get_running_loop()
             pending = [i for i in unique if i not in resolved]
             while pending:
-                owned: list[str] = []
+                owned: dict[str, asyncio.Future] = {}
                 waiting: dict[str, asyncio.Future] = {}
                 for i in pending:
-                    hit = self._cache.get_memory(i)
+                    hit = self._cache.get_memory(i, required[i])
                     if hit is not None:
                         resolved[i] = hit
                         continue
-                    fut = self._inflight.get(i)
-                    if fut is None:
-                        self._inflight[i] = loop.create_future()
-                        owned.append(i)
+                    is_owner, fut = self._cache.claim(i, required[i])
+                    if is_owner:
+                        owned[i] = fut
                     else:
                         waiting[i] = fut
 
                 # 3) Fetch owned ids: durable store first, then OpenAlex.
                 try:
                     if owned:
-                        from_store = await self._cache.fetch_from_store(owned)
-                        still_missing = [i for i in owned if i not in from_store]
-                        fresh: dict[str, list[Connection]] = {}
+                        owned_ids = list(owned)
+                        from_store = await self._cache.fetch_from_store(owned_ids, required)
+                        still_missing = [i for i in owned_ids if i not in from_store]
+                        fresh: dict[str, Ring] = {}
                         if still_missing:
                             fresh = await self._fetch_neighbors_batch(still_missing)
-                            self._cache.put(fresh)
-                        for i in owned:
-                            conns = from_store[i] if i in from_store else fresh.get(i, [])
-                            resolved[i] = conns
-                            fut = self._inflight.pop(i)
-                            if not fut.done():
-                                fut.set_result(conns)
+                            self._cache.put({i: ring for i, ring in fresh.items() if ring})
+                        for i, fut in owned.items():
+                            hit = self._cache.get_memory(i, required[i])
+                            if hit is not None:
+                                resolved[i] = hit
+                            else:
+                                # A failed call group is deliberately not cached.
+                                # This request degrades to any successfully returned buckets.
+                                resolved[i] = [
+                                    conn for bucket in fresh.get(i, {}).values() for conn in bucket
+                                    if conn.connection_type in required[i]
+                                ]
+                            self._cache.finish(i, fut)
                 except BaseException:
                     # Resolve our futures with the retry sentinel so waiters
                     # refetch, and drop the in-flight entries so later calls
                     # retry too.
-                    for i in owned:
-                        fut = self._inflight.pop(i, None)
-                        if fut is not None and not fut.done():
-                            fut.set_result(None)
+                    for i, fut in owned.items():
+                        self._cache.finish(i, fut, success=False)
                     raise
 
                 # 4) Await fetches owned by concurrent batches; ids whose owner
                 #    failed go back through the claim loop.
                 pending = []
                 for i, fut in waiting.items():
-                    conns = await fut
-                    if conns is None:
-                        pending.append(i)
+                    succeeded = await fut
+                    hit = self._cache.get_memory(i, required[i])
+                    if hit is not None:
+                        resolved[i] = hit
+                    elif succeeded:
+                        resolved[i] = []
                     else:
-                        resolved[i] = conns
+                        pending.append(i)
 
-        result: dict[str, list[Connection]] = {}
-        for i in ids:
-            active = self._work_edge_types if _is_work_id(i) else self._edge_types
-            result[i] = [c for c in resolved.get(i, []) if c.connection_type in active]
-        return result
+        return {i: resolved.get(i, []) for i in ids}
 
-    async def _fetch_neighbors_batch(self, ids: list[str]) -> dict[str, list[Connection]]:
+    async def _fetch_neighbors_batch(self, ids: list[str]) -> dict[str, Ring]:
         """
-        Fetch ALL connection types for the given ids (no cache check), splitting
-        work ids from author ids so each routes through its own neighbor logic.
-        Always uses ALL_EDGE_TYPES/ALL_WORK_EDGE_TYPES so each stored ring is complete.
+        Fetch only active connection types. Each successful call group produces
+        complete buckets; failed groups are omitted so they remain retryable.
         """
         work_ids = [i for i in ids if _is_work_id(i)]
         author_ids = [i for i in ids if not _is_work_id(i)]
 
-        tasks = []
-        if author_ids:
-            tasks.append(self._batch_works_connections(author_ids, edge_types=ALL_EDGE_TYPES))
-            tasks.append(self._batch_institutions(author_ids))
-        if work_ids:
-            tasks.append(self._batch_work_neighbors(work_ids, edge_types=ALL_WORK_EDGE_TYPES))
+        tasks: list[tuple[list[str], set[str], object]] = []
+        works_types = self._edge_types & {"coauthor", "citation"}
+        if author_ids and works_types:
+            tasks.append((author_ids, works_types, self._batch_works_connections(author_ids, edge_types=works_types)))
+        if author_ids and "institution" in self._edge_types:
+            tasks.append((author_ids, {"institution"}, self._batch_institutions(author_ids)))
+        if work_ids and self._work_edge_types:
+            tasks.append((work_ids, set(self._work_edge_types), self._batch_work_neighbors(work_ids, edge_types=self._work_edge_types)))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*(task[2] for task in tasks), return_exceptions=True)
 
-        by_source: dict[str, list[Connection]] = {i: [] for i in ids}
-        seen: dict[str, set[str]] = {i: set() for i in ids}
+        rings: dict[str, Ring] = {i: {} for i in ids}
 
-        for batch_result in results:
+        for (source_ids, edge_types, _), batch_result in zip(tasks, results):
             if isinstance(batch_result, Exception):
                 log.warning("Batch neighbor query failed: %s", batch_result, exc_info=batch_result)
                 continue
-            for src_id, connections in batch_result.items():
+            for src_id in source_ids:
+                by_type = {edge_type: [] for edge_type in edge_types}
+                seen = {edge_type: set() for edge_type in edge_types}
+                connections = batch_result.get(src_id, [])
                 for conn in connections:
-                    if conn.target_author_id not in seen[src_id]:
-                        seen[src_id].add(conn.target_author_id)
-                        by_source[src_id].append(conn)
+                    edge_type = conn.connection_type
+                    if edge_type in by_type and conn.target_author_id not in seen[edge_type]:
+                        seen[edge_type].add(conn.target_author_id)
+                        by_type[edge_type].append(conn)
+                rings[src_id].update(by_type)
 
-        return by_source
+        return rings
 
     async def _batch_works_connections(
         self, author_ids: list[str], *, edge_types: set[str] | None = None

@@ -28,6 +28,10 @@
   let currentSuggestions = [];
   let explorerUpdating = false;
   let explorerRefreshPending = false;
+  let institutionRankDebounce = null;
+  const institutionRankMemo = new Map();
+  const RANK_MEMO_TTL_MS = 5 * 60 * 1000;
+  const RANK_MEMO_MAX = 20;
 
   // OpenAlex IDs are prefix-typed: works start with 'W', authors with 'A'.
   function isWorkId(id) {
@@ -385,7 +389,7 @@
     if (e.key === 'Enter') runSearch('work', workSearchInput);
   });
   rankInstitutionSearch?.addEventListener('click', () => runSearch('rank-institution', rankInstitutionInput));
-  document.getElementById('rank-refresh')?.addEventListener('click', () => runInstitutionRank());
+  document.getElementById('rank-refresh')?.addEventListener('click', () => runInstitutionRank(true));
   document.getElementById('home-institution-change')?.addEventListener('click', () => {
     suggestionRequestId += 1;
     setExplorerLoading(false);
@@ -748,7 +752,38 @@
     }
   }
 
-  async function runInstitutionRank() {
+  function scheduleInstitutionRank() {
+    clearTimeout(institutionRankDebounce);
+    institutionRankDebounce = setTimeout(() => runInstitutionRank(), 400);
+  }
+
+  function rankMemoKey(institutionId, originIds) {
+    return `${institutionId}|${[...originIds].sort().join(',')}`;
+  }
+
+  function rememberRank(key, data) {
+    institutionRankMemo.delete(key);
+    institutionRankMemo.set(key, { data, at: Date.now() });
+    while (institutionRankMemo.size > RANK_MEMO_MAX) {
+      institutionRankMemo.delete(institutionRankMemo.keys().next().value);
+    }
+  }
+
+  function renderInstitutionRank(data) {
+    const results = data.results || [];
+    if (!results.length) {
+      setRankStatus(data.message ||
+        'We could not find a coauthor connection between researchers at your school and the researchers in your graph yet. Try adding more researchers you like.');
+      renderRankResults([]);
+      return;
+    }
+    const inst = data.institution?.display_name || rankSelection.institution.display_name;
+    const cacheNote = data.message ? ' · using cached local data' : '';
+    setRankStatus(`Researchers at ${inst} whose coauthor networks are closest to the people in your graph${cacheNote}`);
+    renderRankResults(results);
+  }
+
+  async function runInstitutionRank(bypassMemo = false) {
     if (explorerUpdating) { explorerRefreshPending = true; return; }
     if (state.isLoading) return;
     if (!rankSelection.institution) {
@@ -763,8 +798,17 @@
       return;
     }
 
+    const memoKey = rankMemoKey(rankSelection.institution.id, originIds);
+    const memo = institutionRankMemo.get(memoKey);
+    if (!bypassMemo && memo && Date.now() - memo.at < RANK_MEMO_TTL_MS) {
+      renderInstitutionRank(memo.data);
+      return;
+    }
+    if (memo) institutionRankMemo.delete(memoKey);
+
     setExplorerLoading(true);
     const requestId = ++suggestionRequestId;
+    let timeout = null;
     try {
       const params = new URLSearchParams({
         institution: rankSelection.institution.display_name,
@@ -774,11 +818,10 @@
       });
       originIds.forEach(id => params.append('origin_ids', id));
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), RANK_TIMEOUT_MS);
+      timeout = setTimeout(() => controller.abort(), RANK_TIMEOUT_MS);
       const r = await fetch(`${API_BASE}/api/institution-suggestions?${params}`, {
         signal: controller.signal,
       });
-      clearTimeout(timeout);
       if (!r.ok) {
         let msg = 'Ranking failed. Please try again.';
         try {
@@ -789,17 +832,8 @@
       }
       const data = await r.json();
       if (requestId !== suggestionRequestId) return;
-      const results = data.results || [];
-      if (!results.length) {
-        setRankStatus(data.message ||
-          'We could not find a coauthor connection between researchers at your school and the researchers in your graph yet. Try adding more researchers you like.');
-        renderRankResults([]);
-        return;
-      }
-      const inst = data.institution?.display_name || rankSelection.institution.display_name;
-      const cacheNote = data.message ? ' · using cached local data' : '';
-      setRankStatus(`Researchers at ${inst} whose work is closest to the people in your graph${cacheNote}`);
-      renderRankResults(results);
+      if (!(data.timeout_count || data.error_count)) rememberRank(memoKey, data);
+      renderInstitutionRank(data);
     } catch (err) {
       if (requestId !== suggestionRequestId) return;
       const timedOut = err?.name === 'AbortError';
@@ -807,10 +841,11 @@
         ? 'Suggestions did not finish within 30 seconds. Try refreshing; cached connections make the next attempt faster.'
         : (err?.message || 'Ranking failed. Please try again.'));
     } finally {
+      if (timeout) clearTimeout(timeout);
       if (requestId === suggestionRequestId) setExplorerLoading(false);
       if (explorerRefreshPending) {
         explorerRefreshPending = false;
-        setTimeout(runInstitutionRank, 0);
+        scheduleInstitutionRank();
       }
     }
   }
@@ -924,7 +959,7 @@
       localStorage.setItem(HOME_INSTITUTION_STORAGE, JSON.stringify(item));
       renderHomeInstitution();
       renderRankSelectionStatus();
-      setTimeout(runInstitutionRank, 0);
+      scheduleInstitutionRank();
     } else if (searchSession.entityType === 'work') addWork(item);
     else addResearcher(item);
     searchSession.pageCache.clear();
@@ -1123,7 +1158,7 @@
     applyEdgeFade();
     renderDegrees();
     runLayout();
-    setTimeout(runInstitutionRank, 0);
+    scheduleInstitutionRank();
   }
 
   // ── Add researcher ─────────────────────────────────────────────────────────
@@ -1132,7 +1167,7 @@
     searchInput.value = '';
     state.origins.add(author.id);
     addChip(author.id, author.display_name);
-    return startExpansion(author.id).then(() => { saveState(); return runInstitutionRank(); });
+    return startExpansion(author.id).then(() => { saveState(); scheduleInstitutionRank(); });
   }
 
   function addWork(work) {
@@ -1186,7 +1221,7 @@
       cy.elements().remove();
       state.pathNodes.clear();
       clearSavedState();
-      runInstitutionRank();
+      scheduleInstitutionRank();
       return;
     }
 
@@ -1208,7 +1243,7 @@
     });
 
     saveState();
-    runInstitutionRank();
+    scheduleInstitutionRank();
     runLayout();
   }
 
