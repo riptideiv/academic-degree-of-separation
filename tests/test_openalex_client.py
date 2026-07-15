@@ -393,14 +393,14 @@ async def test_clear_author_cache_forces_refetch(api_key_file):
 def test_concurrency_default_keyed(api_key_file, monkeypatch):
     monkeypatch.delenv("OPENALEX_CONCURRENCY", raising=False)
     client = OpenAlexClient()
-    assert client._semaphore._value == 15
+    assert client._semaphore._value == 25
 
 
 def test_concurrency_default_keyless(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENALEX_KEY", raising=False)
     monkeypatch.delenv("OPENALEX_CONCURRENCY", raising=False)
     client = OpenAlexClient()
-    assert client._semaphore._value == 8
+    assert client._semaphore._value == 25
 
 
 def test_concurrency_env_override(api_key_file, monkeypatch):
@@ -413,10 +413,10 @@ def test_concurrency_invalid_env_falls_back(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENALEX_KEY", raising=False)
     monkeypatch.setenv("OPENALEX_CONCURRENCY", "not-a-number")
     client = OpenAlexClient()
-    assert client._semaphore._value == 8
+    assert client._semaphore._value == 25
 
 
 def test_concurrency_zero_env_falls_back(api_key_file, monkeypatch):
     monkeypatch.setenv("OPENALEX_CONCURRENCY", "0")
     client = OpenAlexClient()
-    assert client._semaphore._value == 15
+    assert client._semaphore._value == 25

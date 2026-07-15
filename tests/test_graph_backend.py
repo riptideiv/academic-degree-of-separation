@@ -494,3 +494,62 @@ async def test_cached_only_batch_never_hits_client():
     assert result["A9"] == []  # uncached id resolves empty — no fetch
     mock_client.get_works_by_authors.assert_not_called()
     mock_client.get_authors_batch.assert_not_called()
+
+
+async def test_coauthor_only_batch_fetches_and_records_only_coauthors():
+    cache = NeighborCache()
+    mock_client = AsyncMock()
+    mock_client.get_works_by_authors.return_value = [
+        make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob")])
+    ]
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"}, neighbor_cache=cache)
+
+    result = await backend.get_neighbors_batch(["A1"])
+
+    assert [c.target_author_id for c in result["A1"]] == ["A2"]
+    mock_client.get_works_by_authors.assert_awaited_once_with(["A1"])
+    mock_client.get_authors_batch.assert_not_called()
+    assert cache.get_memory("A1", {"coauthor"}) is not None
+    assert cache.get_memory("A1", {"citation"}) is None
+
+
+async def test_failed_works_group_is_not_certified_as_empty():
+    cache = NeighborCache()
+    mock_client = AsyncMock()
+    mock_client.get_works_by_authors.side_effect = RuntimeError("temporary failure")
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"}, neighbor_cache=cache)
+
+    assert await backend.get_neighbors_batch(["A1"]) == {"A1": []}
+    assert cache.get_memory("A1", {"coauthor"}) is None
+
+
+async def test_different_backends_monotonically_extend_shared_ring():
+    cache = NeighborCache()
+    coauthor_client = AsyncMock()
+    coauthor_client.get_works_by_authors.return_value = [
+        make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob")])
+    ]
+    institution_client = AsyncMock()
+    institution_client.get_authors_batch.return_value = [{
+        "id": "https://openalex.org/A1",
+        "last_known_institutions": [{"id": "https://openalex.org/I1", "display_name": "MIT"}],
+    }]
+    institution_client.get_institution_authors_batch.return_value = [{
+        "id": "https://openalex.org/A3", "display_name": "Carol",
+        "last_known_institutions": [{"id": "https://openalex.org/I1", "display_name": "MIT"}],
+    }]
+
+    coauthors = OpenAlexBackend(
+        coauthor_client, edge_types={"coauthor"}, neighbor_cache=cache
+    )
+    institutions = OpenAlexBackend(
+        institution_client, edge_types={"institution"}, neighbor_cache=cache
+    )
+    await asyncio.gather(
+        coauthors.get_neighbors_batch(["A1"]),
+        institutions.get_neighbors_batch(["A1"]),
+    )
+
+    assert cache.get_memory("A1", {"coauthor"}) is not None
+    assert cache.get_memory("A1", {"institution"}) is not None
+    assert cache.get_memory("A1", {"coauthor", "institution"}) is not None
