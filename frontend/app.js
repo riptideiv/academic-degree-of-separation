@@ -855,6 +855,9 @@
     document.getElementById('explorer-loading')?.classList.toggle('hidden', !loading);
     document.getElementById('rank-status')?.classList.toggle('hidden', loading);
     document.getElementById('rank-results')?.classList.toggle('is-refreshing', loading);
+    document.querySelectorAll('#rank-results .rank-graph-btn').forEach(button => {
+      button.disabled = loading;
+    });
     const refresh = document.getElementById('rank-refresh');
     if (refresh) refresh.disabled = loading;
   }
@@ -881,7 +884,6 @@
     if (!list) return;
     list.innerHTML = '';
     currentSuggestions = results;
-    if (selectedSuggestionId && !results.some(r => r.author.id === selectedSuggestionId)) closeAuthorSidecar();
     if (!results.length) return;
     results.forEach((result, index) => {
       const li = document.createElement('li');
@@ -906,7 +908,9 @@
         `<button type="button" class="rank-graph-btn">Add →</button></div>` +
         `</div>`;
       li.querySelector('.rank-view-btn').addEventListener('click', () => showAuthorSidecar(result));
-      li.querySelector('.rank-graph-btn').addEventListener('click', () => graphRankResult(result));
+      const addButton = li.querySelector('.rank-graph-btn');
+      addButton.disabled = explorerUpdating;
+      addButton.addEventListener('click', () => graphRankResult(result));
       list.appendChild(li);
     });
   }
