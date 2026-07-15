@@ -1,4 +1,4 @@
-# Researcher Degree of Separation
+# Six Degrees of Academia
 
 "Six degrees of separation" for academics. Pick two (or more) researchers and the
 app finds how they're connected (through **co-authorship**, **citations**, or
