@@ -29,7 +29,7 @@ Type a researcher's name in the sidebar, choose a result, then add a second one 
 use the example on the empty canvas). The sidebar shows the **degrees of separation**
 and the full shortest path, while the graph renders their surrounding research network.
 Optionally choose a home institution in **Institution Explorer** to discover local
-researchers whose coauthor networks are closest to the researchers you already like.
+researchers whose coauthor networks are closest to the researchers in the main graph.
 
 OpenAlex now requires an API key for normal API use. Keys are free; create an account
 and copy yours from [openalex.org/settings/api](https://openalex.org/settings/api).

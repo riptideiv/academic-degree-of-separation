@@ -4,10 +4,8 @@ __pycache__/
 *.pyo
 .env
 .env.local
-.env.*.local
 .venv/
 venv/
 .superpowers/
 neighbor_cache.json
-CLAUDE.md
-AGENTS.md
+*.local*
