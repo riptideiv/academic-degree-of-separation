@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "affiliations": [
+    {
+      "institution_id": "I6902469",
+      "institution_name": "Brandeis University",
+      "institution_ror_url": "https://ror.org/05abbep66",
+      "author_id": "A5072773992",
+      "display_name": "Katrina Elliott",
+      "action": "include",
+      "evidence_url": "https://scholarworks.brandeis.edu/esploro/profile/katrina_elliott",
+      "source": "official_university",
+      "reviewed_at": "2026-08-26",
+      "verified_work_ids": [
+        "W2891784578",
+        "W2800467463",
+        "W2345731203",
+        "W3204177509",
+        "W3139199066",
+        "W3136126418"
+      ],
+      "excluded_work_ids": []
+    },
+    {
+      "institution_id": "I6902469",
+      "institution_name": "Brandeis University",
+      "institution_ror_url": "https://ror.org/05abbep66",
+      "author_id": "A5071574342",
+      "display_name": "John Lisman",
+      "action": "exclude",
+      "evidence_url": "https://www.brandeis.edu/now/2017/october/john-lisman.html",
+      "source": "official_university",
+      "reviewed_at": "2026-08-26",
+      "excluded_work_ids": []
+    },
+    {
+      "institution_id": "I6902469",
+      "institution_name": "Brandeis University",
+      "institution_ror_url": "https://ror.org/05abbep66",
+      "author_id": "A5043078069",
+      "display_name": "J. F. C. Wardle",
+      "action": "exclude",
+      "evidence_url": "https://www.brandeis.edu/physics/people/index.html",
+      "source": "official_university",
+      "reviewed_at": "2026-08-26",
+      "excluded_work_ids": []
+    }
+  ]
+}

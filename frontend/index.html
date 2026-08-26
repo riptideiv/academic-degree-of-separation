@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Researcher Degree of Separation</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20260826-2">
   <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
   <!-- fCoSE: spectral + spring layout for cleaner node separation; it also tiles
        disconnected neighborhoods (the 2+ researcher case) instead of overlapping them. -->
@@ -217,6 +217,7 @@
               <div id="explorer-loading" class="hidden"><span class="mini-spinner" aria-hidden="true"></span><span>Updating recommendations…</span></div>
               <button class="icon-button" id="rank-refresh" type="button" aria-label="Refresh researcher suggestions" title="Refresh suggestions">↻</button>
             </div>
+            <p class="explorer-method-note"><span aria-hidden="true">✓</span> Publication-verified coauthor paths · bounded candidate search</p>
           </header>
           <div class="explorer-results-scroll"><ul id="rank-results"></ul></div>
         </div>
@@ -226,7 +227,7 @@
         <div id="author-sidecar-content"></div>
       </aside>
     </div>
-    <div id="institution-info-tooltip" role="tooltip" class="floating-tooltip hidden">Choose your school to discover its researchers whose work is most closely related to researchers already in the graph.</div>
+    <div id="institution-info-tooltip" role="tooltip" class="floating-tooltip hidden">Checks a bounded, topic-balanced set of researchers and only shows coauthor paths backed by publication records. Affiliation labels distinguish reviewed current evidence from OpenAlex last-known data. Results are not an exhaustive search of everyone at the institution.</div>
     <details id="graph-legend" class="hidden" open>
       <summary class="legend-title">Legend</summary>
       <div class="legend-row"><span class="legend-node" style="background:#f5821e"></span> Searched researcher</div>
@@ -260,7 +261,7 @@
     <button id="view-menu" type="button">Menu</button>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=20260826-2"></script>
 </body>
 
 </html>

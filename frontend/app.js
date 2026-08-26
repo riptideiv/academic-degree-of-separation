@@ -26,6 +26,7 @@
   let authorDetailRequestId = 0;
   let selectedSuggestionId = null;
   let currentSuggestions = [];
+  let currentExplorerCoverage = null;
   let explorerUpdating = false;
   let explorerRefreshPending = false;
 
@@ -401,9 +402,11 @@
   function showExplorerTooltip() {
     if (!explorerInfo || !explorerTooltip) return;
     const rect = explorerInfo.getBoundingClientRect();
-    explorerTooltip.style.left = `${Math.max(8, Math.min(rect.right + 8, window.innerWidth - 292))}px`;
-    explorerTooltip.style.top = `${Math.max(8, Math.min(rect.top - 6, window.innerHeight - 130))}px`;
     explorerTooltip.classList.remove('hidden');
+    const tooltipWidth = explorerTooltip.offsetWidth || 280;
+    const tooltipHeight = explorerTooltip.offsetHeight || 130;
+    explorerTooltip.style.left = `${Math.max(8, Math.min(rect.right + 8, window.innerWidth - tooltipWidth - 8))}px`;
+    explorerTooltip.style.top = `${Math.max(8, Math.min(rect.top - 6, window.innerHeight - tooltipHeight - 8))}px`;
   }
   function hideExplorerTooltip() { explorerTooltip?.classList.add('hidden'); }
   explorerInfo?.addEventListener('click', e => e.stopPropagation());
@@ -723,22 +726,38 @@
       author.openalex_url ? `<a href="${escAttr(author.openalex_url)}" target="_blank" rel="noopener">OpenAlex ↗</a>` : '',
       author.orcid ? `<a href="${escAttr(author.orcid)}" target="_blank" rel="noopener">ORCID ↗</a>` : '',
     ].filter(Boolean).join('');
-    const path = (result.steps || []).map(s =>
-      `<li><span class="step-people">${escHtml(s.from_name)} → ${escHtml(s.to_name)}</span>` +
-      `<span class="step-via">${escHtml(stepPhrase(s))}</span></li>`).join('');
+    const pathSteps = result.steps || [];
+    const path = pathSteps.map(renderVerifiedPathStep).join('');
+    const pathEvidenceComplete = hasCompletePathEvidence(result);
+    const pathVerificationHtml = pathEvidenceComplete
+      ? '<p class="path-verification verified"><span aria-hidden="true">✓</span> Every hop below is backed by a publication record.</p>'
+      : '<p class="path-verification unverified">Publication evidence for this path is incomplete, so it is not presented as verified.</p>';
     const evidence = result.affiliation_evidence;
     const affiliationName = evidence?.display_name || result.matched_institution || '';
-    const affiliationHtml = affiliationName
-      ? `<p class="author-path-affiliation">At ${escHtml(affiliationName)}</p>`
+    const affiliationView = affiliationEvidenceView(evidence);
+    const evidenceUrl = safeExternalUrl(evidence?.source_url || evidence?.openalex_url || evidence?.ror_url);
+    const evidenceLink = evidenceUrl
+      ? ` <a href="${escAttr(evidenceUrl)}" target="_blank" rel="noopener">${escHtml(affiliationView.linkLabel)} ↗</a>`
       : '';
+    const affiliationHtml = affiliationName
+      ? `<div class="author-path-affiliation ${escAttr(affiliationView.className)}">` +
+        `<strong>${escHtml(affiliationView.label)}</strong>` +
+        `<span>${escHtml(affiliationName)}. ${escHtml(affiliationView.detail)}${evidenceLink}</span></div>`
+      : '';
+    const worksLabel = author.metrics_scoped ? 'verified works' : 'works';
+    const citationValue = author.metrics_scoped
+      ? '—'
+      : (author.cited_by_count || 0).toLocaleString();
+    const citationLabel = author.metrics_scoped ? 'citations not counted' : 'citations';
     if (content) content.innerHTML = `<article class="author-card"><h2>${escHtml(author.display_name)}</h2>` +
       `<div class="author-affiliation">${escHtml(result.matched_institution || author.institution || 'Institution not listed')}</div>` +
       `<div class="author-topic-list">${topics || '<span class="author-topic">Topics not listed</span>'}</div>` +
-      `<div class="author-metrics"><div class="author-metric"><strong>${(author.works_count || 0).toLocaleString()}</strong><span>works</span></div>` +
-      `<div class="author-metric"><strong>${(author.cited_by_count || 0).toLocaleString()}</strong><span>citations</span></div></div>` +
+      `<div class="author-metrics"><div class="author-metric"><strong>${(author.works_count || 0).toLocaleString()}</strong><span>${worksLabel}</span></div>` +
+      `<div class="author-metric"><strong>${citationValue}</strong><span>${citationLabel}</span></div></div>` +
       `<div class="author-links">${links}</div>` +
       `<section class="author-section"><h3>Representative research</h3><div id="sidecar-works" class="sidecar-loading"><span class="mini-spinner"></span>Loading works…</div></section>` +
-      `<section class="author-section"><h3>Why this researcher appears</h3>${affiliationHtml}<ol class="degrees-steps">${path || '<li><span class="step-people">Connection details are unavailable.</span></li>'}</ol></section></article>`;
+      `<section class="author-section"><h3>Why this researcher appears</h3>${affiliationHtml}${pathVerificationHtml}` +
+      `<ol class="degrees-steps evidence-path">${path || '<li><span class="step-people">Connection details are unavailable.</span></li>'}</ol></section></article>`;
     const works = await loadTopWorks(author.id);
     if (requestId !== authorDetailRequestId || selectedSuggestionId !== author.id) return;
     const worksEl = document.getElementById('sidecar-works');
@@ -770,7 +789,6 @@
         institution: rankSelection.institution.display_name,
         institution_id: rankSelection.institution.id,
         limit: '10',
-        candidate_pool: '30',
       });
       originIds.forEach(id => params.append('origin_ids', id));
       const controller = new AbortController();
@@ -789,16 +807,27 @@
       }
       const data = await r.json();
       if (requestId !== suggestionRequestId) return;
-      const results = data.results || [];
+      currentExplorerCoverage = {
+        complete: data.coverage_complete === true,
+        note: explorerCoverageNote(data),
+      };
+      // A stale or partially upgraded backend may return path-shaped results
+      // without publication verification. Do not present those as evidence-backed
+      // recommendations.
+      const allResults = data.results || [];
+      const results = allResults.filter(hasCompletePathEvidence);
       if (!results.length) {
-        setRankStatus(data.message ||
-          'We could not find a coauthor connection between researchers at your school and the researchers in your graph yet. Try adding more researchers you like.');
+        const unverifiedNote = allResults.length
+          ? ' Candidate paths without complete publication evidence were omitted.'
+          : '';
+        setRankStatus((data.message ||
+          'No verified coauthor path was found among the candidates checked.') +
+          unverifiedNote + ` ${currentExplorerCoverage.note}`);
         renderRankResults([]);
         return;
       }
       const inst = data.institution?.display_name || rankSelection.institution.display_name;
-      const cacheNote = data.message ? ' · using cached local data' : '';
-      setRankStatus(`Researchers at ${inst} whose work is closest to the people in your graph${cacheNote}`);
+      setRankStatus(`Verified coauthor paths to researchers at ${inst}. ${currentExplorerCoverage.note}`);
       renderRankResults(results);
     } catch (err) {
       if (requestId !== suggestionRequestId) return;
@@ -838,7 +867,75 @@
 
   function rankLabel(result) {
     if (!result.found) return 'no connection found';
-    return `${result.hops} coauthor step${result.hops === 1 ? '' : 's'} away`;
+    if (result.path_verified !== true) return 'publication evidence incomplete';
+    return `${result.hops} verified coauthor step${result.hops === 1 ? '' : 's'}`;
+  }
+
+  function explorerCoverageNote(data) {
+    const coverage = data.coverage || {};
+    const supplied = data.coverage_note || data.coverage_message || coverage.note || coverage.message;
+    if (supplied) return String(supplied);
+    return data.coverage_complete === true
+      ? 'All candidates selected for this bounded search were checked.'
+      : 'This is a bounded candidate search, so longer or unindexed paths may exist.';
+  }
+
+  function affiliationEvidenceView(evidence) {
+    if (evidence?.status === 'verified_current') {
+      return {
+        className: 'verified-current',
+        label: 'Current affiliation verified',
+        detail: 'Backed by a reviewed current-affiliation source.',
+        linkLabel: 'Official affiliation source',
+      };
+    }
+    if (evidence?.status === 'openalex_last_known') {
+      return {
+        className: 'last-known',
+        label: 'OpenAlex last-known affiliation',
+        detail: 'This does not independently confirm a current appointment.',
+        linkLabel: 'Affiliation source',
+      };
+    }
+    return {
+      className: 'unknown-status',
+      label: 'Affiliation reported by the data source',
+      detail: 'Current status was not independently verified.',
+      linkLabel: 'Affiliation source',
+    };
+  }
+
+  function topicSimilarityLabel(result) {
+    const raw = Number(result.topic_similarity ?? result.author?._topic_similarity);
+    if (!Number.isFinite(raw)) return '';
+    const percentage = Math.max(0, Math.min(100, Math.round(raw <= 1 ? raw * 100 : raw)));
+    return `${percentage}% topic match`;
+  }
+
+  function publicationEvidenceUrl(step) {
+    const supplied = safeExternalUrl(step?.work_url);
+    if (supplied) return supplied;
+    const workId = String(step?.work_id || '');
+    return /^W\d+$/.test(workId) ? `https://openalex.org/${workId}` : '';
+  }
+
+  function hasCompletePathEvidence(result) {
+    const steps = Array.isArray(result?.steps) ? result.steps : [];
+    return result?.path_verified === true && steps.length > 0 &&
+      steps.every(step => step?.evidence_verified === true && publicationEvidenceUrl(step));
+  }
+
+  function renderVerifiedPathStep(step) {
+    const url = publicationEvidenceUrl(step);
+    const title = step.title || step.label || 'Publication record';
+    const year = step.year || step.publication_year;
+    const titleHtml = url
+      ? `<a href="${escAttr(url)}" target="_blank" rel="noopener">${escHtml(title)} ↗</a>`
+      : escHtml(title);
+    const evidenceLabel = step.evidence_verified === true ? 'Verified publication' : 'Publication evidence incomplete';
+    return `<li class="${step.evidence_verified === true ? 'evidence-verified' : 'evidence-unverified'}">` +
+      `<span class="step-people">${escHtml(step.from_name)} → ${escHtml(step.to_name)}</span>` +
+      `<span class="step-via"><strong>${evidenceLabel}:</strong> ${titleHtml}${year ? ` (${escHtml(String(year))})` : ''}</span></li>`;
   }
 
   function renderRankResults(results) {
@@ -855,19 +952,20 @@
       if (result.author.id === selectedSuggestionId) li.classList.add('selected');
       const author = result.author;
       const matchedInstitution = result.matched_institution || author.institution || 'Selected institution';
-      const primaryInstitution = author.institution || 'Unknown primary affiliation';
-      const primaryNote = primaryInstitution && primaryInstitution !== matchedInstitution
-        ? ` · Primary: ${primaryInstitution}`
-        : '';
+      const affiliationView = affiliationEvidenceView(result.affiliation_evidence);
+      const topicLabel = topicSimilarityLabel(result);
       li.innerHTML =
         `<div class="rank-row">` +
         `<span class="rank-num">${index + 1}</span>` +
         `<div class="rank-main">` +
         `<strong>${escHtml(author.display_name)}</strong>` +
-        `<small>${escHtml((author.topics || []).join(' · ') || matchedInstitution)}${escHtml(primaryNote)}</small>` +
+        `<small class="rank-affiliation">${escHtml(matchedInstitution)}</small>` +
+        `<small>${escHtml((author.topics || []).join(' · ') || 'Topics not listed')}</small>` +
+        `<div class="rank-trust-row"><span class="affiliation-status ${escAttr(affiliationView.className)}">${escHtml(affiliationView.label)}</span>` +
+        `${topicLabel ? `<span class="topic-similarity">${escHtml(topicLabel)}</span>` : ''}</div>` +
         `</div><div class="rank-actions">` +
         `<span class="rank-distance">${escHtml(rankLabel(result))}</span>` +
-        `<button type="button" class="rank-view-btn">View author</button>` +
+        `<button type="button" class="rank-view-btn">View evidence</button>` +
         `<button type="button" class="rank-graph-btn">Add →</button></div>` +
         `</div>`;
       li.querySelector('.rank-view-btn').addEventListener('click', () => showAuthorSidecar(result));
@@ -1853,6 +1951,16 @@
 
   function escAttr(str) {
     return escHtml(str).replace(/"/g, '&quot;');
+  }
+
+  function safeExternalUrl(value) {
+    if (!value) return '';
+    try {
+      const url = new URL(String(value));
+      return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : '';
+    } catch {
+      return '';
+    }
   }
 
   // Restore any previously saved session on page load.

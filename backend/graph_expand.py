@@ -1,6 +1,7 @@
 import logging
 from typing import AsyncIterator
 
+from backend.affiliation_overrides import apply_reviewed_identity
 from backend.graph_backend import GraphBackend
 from backend.openalex_client import OpenAlexClient, _short_id
 
@@ -8,6 +9,9 @@ log = logging.getLogger(__name__)
 
 
 def _inst_name(author: dict) -> str | None:
+    override = author.get("_affiliation_override")
+    if override is not None:
+        return override.institution_name
     insts = author.get("last_known_institutions", [])
     return insts[0].get("display_name") if insts else None
 
@@ -143,7 +147,10 @@ async def expand_graph(
             break
 
         author_list = await client.get_authors_batch(list(fetch_ids))
-        meta: dict[str, dict] = {_short_id(a["id"]): a for a in author_list}
+        meta: dict[str, dict] = {
+            _short_id(author["id"]): apply_reviewed_identity(author)
+            for author in author_list
+        }
 
         # Rank each root's candidates by citations and keep its own budget per root.
         next_frontiers: dict[str, set[str]] = {r: set() for r in all_roots}

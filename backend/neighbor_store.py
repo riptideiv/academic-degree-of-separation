@@ -163,14 +163,14 @@ class SupabaseNeighborStore(NeighborStore):
     """
 
     _TABLE_DDL = """
-        CREATE TABLE IF NOT EXISTS neighbor_cache (
+        CREATE TABLE IF NOT EXISTS neighbor_cache_v2 (
             author_id  text PRIMARY KEY,
             connections jsonb NOT NULL,
             updated_at timestamptz DEFAULT now()
         )
     """
     _UPSERT = """
-        INSERT INTO neighbor_cache (author_id, connections, updated_at)
+        INSERT INTO neighbor_cache_v2 (author_id, connections, updated_at)
         VALUES ($1, $2, now())
         ON CONFLICT (author_id)
         DO UPDATE SET connections = EXCLUDED.connections, updated_at = now()
@@ -205,7 +205,7 @@ class SupabaseNeighborStore(NeighborStore):
             return {}
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT author_id, connections FROM neighbor_cache WHERE author_id = ANY($1::text[])",
+                "SELECT author_id, connections FROM neighbor_cache_v2 WHERE author_id = ANY($1::text[])",
                 ids,
             )
         result: dict[str, list[Connection]] = {}
@@ -249,7 +249,7 @@ class SupabaseNeighborStore(NeighborStore):
         self._pending.clear()
         if self._pool is not None:
             async with self._pool.acquire() as conn:
-                await conn.execute("DELETE FROM neighbor_cache")
+                await conn.execute("DELETE FROM neighbor_cache_v2")
 
     async def close(self) -> None:
         if self._flush_task is not None:

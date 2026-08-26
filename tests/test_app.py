@@ -4,8 +4,16 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 from httpx import AsyncClient, ASGITransport
-from backend.app import app
-from backend.models import AuthorResult, WorkResult
+from backend.app import (
+    _SummarySeededBackend,
+    _collect_path_proposal,
+    _has_current_inst,
+    _merge_affiliation_overrides,
+    _ranked_author_payload,
+    _short_coauthor_paths,
+    app,
+)
+from backend.models import AuthorResult, Connection, WorkResult
 from backend.neighbor_store import JsonNeighborStore, SupabaseNeighborStore
 
 
@@ -23,6 +31,95 @@ async def test_health_reports_supabase_store():
             resp = await ac.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "store": "supabase"}
+
+
+async def test_summary_seeded_backend_uses_seed_roots_and_delegates_the_rest():
+    class BaseBackend:
+        def __init__(self):
+            self.requested = []
+
+        async def get_neighbors(self, author_id):
+            return (await self.get_neighbors_batch([author_id]))[author_id]
+
+        async def get_neighbors_batch(self, author_ids, cached_only=False):
+            self.requested.append((author_ids, cached_only))
+            return {
+                author_id: [Connection(
+                    target_author_id="A-DELEGATED",
+                    target_name="Delegated",
+                    connection_type="coauthor",
+                    label="",
+                )]
+                for author_id in author_ids
+            }
+
+    base = BaseBackend()
+    seed = Connection(
+        target_author_id="A-SEED-NEIGHBOR",
+        target_name="Seed Neighbor",
+        connection_type="coauthor",
+        label="",
+    )
+    backend = _SummarySeededBackend(
+        base,
+        {"A-SEED": [seed]},
+        complete_seed_ids={"A-SEED"},
+    )
+
+    result = await backend.get_neighbors_batch(
+        ["A-SEED", "A-OTHER"], cached_only=True
+    )
+
+    assert result["A-SEED"] == [seed]
+    assert result["A-OTHER"][0].target_author_id == "A-DELEGATED"
+    assert result.complete_ids == {"A-SEED", "A-OTHER"}
+    assert base.requested == [(["A-OTHER"], True)]
+
+    incomplete = _SummarySeededBackend(base, {"A-SEED": [seed]})
+    incomplete_result = await incomplete.get_neighbors_batch(["A-SEED"])
+    assert incomplete_result.complete_ids == set()
+
+
+async def test_rank_path_proposal_skips_discarded_metadata_hydration():
+    path = [
+        {
+            "author_id": "A1",
+            "author_name": "Alice",
+            "connection_to_next": "coauthor",
+            "label": "Proposal paper",
+            "direction": None,
+        },
+        {
+            "author_id": "A2",
+            "author_name": "Bob",
+            "connection_to_next": None,
+            "label": None,
+            "direction": None,
+        },
+    ]
+
+    async def mock_find_path(*args, **kwargs):
+        yield {"type": "result", "found": True, "path": path, "hops": 1}
+
+    with patch("backend.app.find_path", mock_find_path), patch(
+        "backend.app._client"
+    ) as client:
+        result = await _collect_path_proposal(
+            AsyncMock(), "A1", "Alice", "A2", max_depth=4, to_name="Bob"
+        )
+
+    assert result["found"] is True
+    assert result["hops"] == 1
+    assert result["steps"] == [{
+        "from_id": "A1",
+        "from_name": "Alice",
+        "to_id": "A2",
+        "to_name": "Bob",
+        "type": "coauthor",
+        "label": "Proposal paper",
+        "direction": None,
+    }]
+    assert client.mock_calls == []
 
 
 async def test_openalex_key_accepts_plain_text_payload():
@@ -114,6 +211,45 @@ async def test_get_author_top_works_returns_results():
     assert data[0]["publication_year"] == 2020
     assert data[0]["doi"] == "https://doi.org/10.1/abc"
     mock_client.get_author_works.assert_awaited_once_with("A1", limit=10)
+
+
+async def test_get_conflated_author_works_uses_reviewed_scope():
+    reviewed_works = [
+        {
+            "id": "https://openalex.org/W3139199066",
+            "title": "Running it up the flagpole",
+            "cited_by_count": 3,
+            "publication_year": 2021,
+            "authorships": [{"author": {
+                "id": "https://openalex.org/A5072773992",
+                "display_name": "Katrina Elliott",
+            }}],
+        },
+        {
+            "id": "https://openalex.org/W2891784578",
+            "title": "Time Travel",
+            "cited_by_count": 10,
+            "publication_year": 2018,
+            "authorships": [{"author": {
+                "id": "https://openalex.org/A5072773992",
+                "display_name": "Katrina Elliott",
+            }}],
+        },
+    ]
+    with patch("backend.app._client") as mock_client:
+        mock_client.get_works_batch = AsyncMock(return_value=reviewed_works)
+        mock_client.get_author_works = AsyncMock()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/api/authors/A5072773992/works?limit=1")
+
+    assert resp.status_code == 200
+    assert [work["id"] for work in resp.json()] == ["W2891784578"]
+    requested = set(mock_client.get_works_batch.await_args.args[0])
+    assert requested == {
+        "W2891784578", "W2800467463", "W2345731203",
+        "W3204177509", "W3139199066", "W3136126418",
+    }
+    mock_client.get_author_works.assert_not_awaited()
 
 
 @pytest.mark.skip(reason="Replaced by graph-based institution suggestions")
@@ -310,20 +446,45 @@ async def test_institution_suggestions_use_all_author_origins_and_coauthors_only
         "last_known_institutions": [{"id": "https://openalex.org/I1", "display_name": "Duke University"}],
     }]
 
-    async def mock_find_path(backend, source_id, source_name, target_id, target_name=None, max_depth=6):
+    async def mock_collect_path(
+        backend, source_id, source_name, target_id, max_depth=6, *, to_name=None
+    ):
         if target_id == "A3":
-            yield {"type": "result", "found": True, "hops": 2, "path": []}
-        else:
-            yield {"type": "result", "found": False, "reason": "No path found"}
+            return {
+                "found": True, "hops": 2,
+                "steps": [{"from_id": "A1", "to_id": "AB", "type": "coauthor"}],
+            }
+        return {"found": False, "hops": None, "steps": []}
+
+    async def mock_verify(path, candidate_profile, origin_profile):
+        if not path.get("found"):
+            return None
+        return {
+            **path,
+            "steps": [{
+                "from_id": "A1", "from_name": "Local Scholar",
+                "to_id": "A3", "to_name": "A3", "type": "coauthor",
+                "label": "Verified paper", "title": "Verified paper",
+                "direction": None, "work_id": "W1",
+                "work_url": "https://openalex.org/W1",
+                "publication_year": 2024, "evidence_verified": True,
+            }],
+            "path_verified": True,
+            "evidence_quality": 1.0,
+            "evidence_query_complete": True,
+        }
 
     with patch("backend.app._client") as mock_client, \
-         patch("backend.app.find_path", mock_find_path), \
+         patch("backend.app._short_coauthor_paths", AsyncMock(return_value=({}, 0, True))), \
+         patch("backend.app._collect_path_proposal", AsyncMock(side_effect=mock_collect_path)), \
+         patch("backend.app._verify_deep_coauthor_path", AsyncMock(side_effect=mock_verify)), \
          patch("backend.app._make_backend") as make_backend:
         mock_client.get_institution_authors = AsyncMock(return_value=candidates)
         mock_client.get_author = AsyncMock(side_effect=lambda author_id: {
             "id": author_id, "display_name": author_id,
         })
         mock_client.get_authors_batch = AsyncMock(return_value=[])
+        mock_client.get_coauthor_summary = AsyncMock(return_value={})
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get(
                 "/api/institution-suggestions?institution_id=I1&institution=Duke"
@@ -339,6 +500,221 @@ async def test_institution_suggestions_use_all_author_origins_and_coauthors_only
     mock_client.get_institution_authors.assert_awaited_once_with(
         "I1", limit=80, sort="cited_by_count:desc"
     )
+
+
+async def test_institution_suggestions_return_verified_two_hop_join():
+    institution = {"id": "I1", "display_name": "Example University"}
+    candidates = [
+        {
+            "id": "https://openalex.org/A1",
+            "display_name": "Local One",
+            "works_count": 3,
+            "cited_by_count": 5,
+            "last_known_institutions": [institution],
+        },
+        {
+            "id": "https://openalex.org/A2",
+            "display_name": "Local Two",
+            "works_count": 4,
+            "cited_by_count": 6,
+            "last_known_institutions": [institution],
+        },
+    ]
+    def verified_path(candidate_id, candidate_name, bridge_id, bridge_name, suffix):
+        return {
+            "found": True, "hops": 2, "closest_origin_id": "A0",
+            "reachable_origin_count": 1, "path_verified": True,
+            "evidence_quality": 1.0,
+            "steps": [
+                {
+                    "from_id": candidate_id, "from_name": candidate_name,
+                    "to_id": bridge_id, "to_name": bridge_name,
+                    "type": "coauthor", "label": f"Paper {suffix}a",
+                    "title": f"Paper {suffix}a", "direction": None,
+                    "work_id": f"W{suffix}a", "work_url": f"https://openalex.org/W{suffix}a",
+                    "publication_year": 2023, "evidence_verified": True,
+                },
+                {
+                    "from_id": bridge_id, "from_name": bridge_name,
+                    "to_id": "A0", "to_name": "Origin",
+                    "type": "coauthor", "label": f"Paper {suffix}b",
+                    "title": f"Paper {suffix}b", "direction": None,
+                    "work_id": f"W{suffix}b", "work_url": f"https://openalex.org/W{suffix}b",
+                    "publication_year": 2024, "evidence_verified": True,
+                },
+            ],
+        }
+    short_paths = {
+        "A1": verified_path("A1", "Local One", "AB1", "Bridge One", "1"),
+        "A2": verified_path("A2", "Local Two", "AB2", "Bridge Two", "2"),
+    }
+
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app._short_coauthor_paths", AsyncMock(return_value=(short_paths, 0, True))), \
+         patch("backend.app._make_backend") as make_backend:
+        mock_client.get_institution_authors = AsyncMock(return_value=candidates)
+        mock_client.get_authors_batch = AsyncMock(return_value=[{
+            "id": "https://openalex.org/A0",
+            "display_name": "Origin",
+        }])
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                "/api/institution-suggestions?institution_id=I1"
+                "&institution=Example%20University&origin_ids=A0&limit=2"
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["search_strategy"] == "balanced_verified_two_hop_join"
+    assert data["timeout_count"] == 0
+    assert data["error_count"] == 0
+    assert {result["author"]["id"] for result in data["results"]} == {
+        "A1",
+        "A2",
+    }
+    assert all(result["hops"] == 2 for result in data["results"])
+    paths = {
+        result["author"]["id"]: result["steps"]
+        for result in data["results"]
+    }
+    assert paths["A1"][0]["to_name"] == "Bridge One"
+    assert paths["A2"][0]["to_name"] == "Bridge Two"
+    assert all(step["evidence_verified"] for result in data["results"] for step in result["steps"])
+    make_backend.assert_not_called()
+
+
+async def test_reviewed_affiliation_reserves_slot_and_returns_official_evidence():
+    institution = {
+        "id": "https://openalex.org/I6902469",
+        "display_name": "Brandeis University",
+    }
+    high_citation_authors = [
+        {
+            "id": f"https://openalex.org/A{1000 + index}",
+            "display_name": f"Highly Cited {index}",
+            "works_count": 100,
+            "cited_by_count": 100_000 - index,
+            "last_known_institutions": [institution],
+        }
+        for index in range(30)
+    ]
+    katrina = {
+        "id": "https://openalex.org/A5072773992",
+        "display_name": "Conflated Katrina Record",
+        "works_count": 19,
+        "cited_by_count": 87,
+        "orcid": "https://orcid.org/unreviewed",
+        "topics": [{"display_name": "Unrelated topic"}],
+        "last_known_institutions": [{
+            "id": "https://openalex.org/I154248400",
+            "display_name": "The University of Queensland",
+        }],
+    }
+
+    with patch("backend.app._client") as mock_client:
+        mock_client.get_authors_batch = AsyncMock(return_value=[katrina])
+        merged = await _merge_affiliation_overrides(
+            high_citation_authors,
+            "I6902469",
+            effective_pool=30,
+        )
+
+    assert len(merged) == 30
+    assert merged[0]["id"].endswith("A5072773992")
+    assert all(not author["id"].endswith("A1029") for author in merged)
+    payload = _ranked_author_payload(
+        merged[0],
+        {"id": "I6902469", "display_name": "Brandeis University"},
+        found=False,
+        hops=None,
+        steps=[],
+        closest_origin_id=None,
+        reachable_origin_count=0,
+    )
+    assert payload["author"]["institution"] == "Brandeis University"
+    assert payload["author"]["display_name"] == "Katrina Elliott"
+    assert payload["author"]["works_count"] == 6
+    assert payload["author"]["cited_by_count"] == 0
+    assert payload["author"]["metrics_scoped"] is True
+    assert payload["author"]["orcid"] is None
+    assert payload["author"]["topics"] == []
+    assert payload["affiliation_evidence"]["source"] == "official_university"
+    assert payload["affiliation_evidence"]["source_url"] == (
+        "https://scholarworks.brandeis.edu/esploro/profile/katrina_elliott"
+    )
+
+
+async def test_conflated_reviewed_author_does_not_trust_summary_without_exact_work():
+    candidate = {
+        "id": "https://openalex.org/A5072773992",
+        "display_name": "Katrina Elliott",
+    }
+
+    async def summary(author_id, verified_work_ids=None, limit=200):
+        if author_id == "A5103215889":
+            # The broad OpenAlex record has a bogus direct Katrina edge, while Marc
+            # Lange is a genuine bridge present in her reviewed philosophy works.
+            assert verified_work_ids is None
+            return {
+                "A5072773992": {"name": "Katrina Elliott", "works_count": 1},
+                "A5051014644": {"name": "Marc Lange", "works_count": 2},
+            }
+        assert author_id == "A5072773992"
+        assert set(verified_work_ids) == {
+            "W2891784578", "W2800467463", "W2345731203",
+            "W3204177509", "W3139199066", "W3136126418",
+        }
+        return {
+            "A5051014644": {
+                "name": "Marc Lange",
+                "works_count": 1,
+                "label": "Running it up the flagpole",
+            },
+        }
+
+    with patch("backend.app._client") as mock_client:
+        mock_client.get_coauthor_summary = AsyncMock(side_effect=summary)
+        mock_client.get_authors_batch = AsyncMock(return_value=[{
+            "id": "https://openalex.org/A5103215889",
+            "display_name": "David Chalmers",
+        }])
+        mock_client.get_coauthor_links = AsyncMock(return_value=[])
+        paths, errors, complete = await _short_coauthor_paths(
+            [candidate],
+            ["A5103215889"],
+            max_depth=2,
+        )
+
+    assert errors == 0
+    assert complete is True
+    assert paths == {}
+    assert mock_client.get_coauthor_links.await_count >= 2
+
+
+def test_current_institution_can_be_any_last_known_affiliation():
+    author = {
+        "last_known_institutions": [
+            {"id": "https://openalex.org/I2", "display_name": "First"},
+            {"id": "https://openalex.org/I1", "display_name": "Second"},
+        ],
+    }
+    assert _has_current_inst(author, "I1") is True
+
+
+async def test_institution_suggestions_caps_origin_fanout():
+    with patch("backend.app._client") as mock_client, \
+         patch("backend.app._make_backend"):
+        mock_client.get_institution_authors = AsyncMock(return_value=[])
+        params = "&".join(f"origin_ids=A{index}" for index in range(12))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(
+                f"/api/institution-suggestions?institution_id=I1&institution=Test&{params}"
+            )
+
+    data = resp.json()
+    assert data["origin_ids"] == [f"A{index}" for index in range(10)]
+    assert data["omitted_origin_count"] == 2
 
 
 async def test_search_works_returns_results():
@@ -586,7 +962,11 @@ async def test_graph_expand_emits_path_event():
     assert pe["to_id"] == "A2"
     # The ordered shortest-path steps (names + paper) are included for the sidebar.
     assert pe["steps"] == [
-        {"from_name": "Alice", "to_name": "Bob", "type": "coauthor", "label": "Paper", "direction": None}
+        {
+            "from_id": "A1", "from_name": "Alice",
+            "to_id": "A2", "to_name": "Bob",
+            "type": "coauthor", "label": "Paper", "direction": None,
+        }
     ]
 
 

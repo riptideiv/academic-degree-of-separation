@@ -879,23 +879,36 @@ body {
 }
 
 /* ── Mobile mode ─────────────────────────────────────────────────────────── */
-#institution-explorer-shell { position:absolute; left:12px; bottom:190px; z-index:41; display:flex; align-items:flex-start; gap:10px; }
-#institution-explorer-shell:has(+ #institution-info-tooltip + #graph-legend.hidden) { bottom:12px; }
-.graph-window { position:relative; inset:auto; width:min(390px, calc(100vw - 24px)); overflow:hidden; display:block; border-color:var(--green-200); box-shadow:0 5px 22px rgba(23,61,43,.13); }
+#institution-explorer-shell {
+  --explorer-bottom:190px;
+  --explorer-top-clearance:12px;
+  --explorer-window-max:max(44px,min(58vh,570px,calc(100vh - var(--explorer-bottom) - var(--explorer-top-clearance))));
+  position:absolute;
+  left:12px;
+  bottom:var(--explorer-bottom);
+  z-index:41;
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+}
+#institution-explorer-shell:has(+ #institution-info-tooltip + #graph-legend.hidden) { --explorer-bottom:12px; }
+.graph-window { position:relative; inset:auto; width:min(390px, calc(100vw - 24px)); max-height:var(--explorer-window-max); overflow:hidden; display:block; border-color:var(--green-200); box-shadow:0 5px 22px rgba(23,61,43,.13); }
 .graph-window-title { flex:none; color:var(--green-900); background:linear-gradient(90deg,var(--green-50),#fff); border-bottom:1px solid var(--green-200); }
 .info-button { border-color:var(--green-500); color:var(--green-800); }
 /* The bounded, scrollable region lives on .explorer-content (a plain div) rather
    than the .graph-window <details>, because a <details> element does not
    distribute flex to its children, so a scroll child there never gets bounded. */
-.explorer-content { min-height:0; max-height:calc(min(58vh, 570px) - 44px); overflow:hidden; display:flex; flex-direction:column; }
+.explorer-content { min-height:0; max-height:calc(var(--explorer-window-max) - 44px); overflow:hidden; display:flex; flex-direction:column; }
 .explorer-header { position:sticky; top:0; z-index:2; flex:none; padding:10px 12px; background:rgba(255,255,255,.98); border-bottom:1px solid var(--green-200); }
-.explorer-results-scroll { min-height:0; overflow-y:auto; overflow-x:hidden; padding:9px 10px 11px; }
+.explorer-results-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; padding:9px 10px 11px; }
 #home-institution-picker { padding:0; }
 #home-institution-pill { margin:0; padding:5px 8px; border-color:var(--green-200); background:var(--green-50); }
 #home-institution-name { font-size:12px; color:var(--green-900); }
 #home-institution-change { min-height:26px; color:var(--green-700); }
 .explorer-actions { min-height:28px; margin-top:6px; }
 .explorer-actions .icon-button { min-width:28px; min-height:28px; width:28px; height:28px; padding:0; font-size:14px; color:var(--green-800); border-color:var(--green-200); }
+.explorer-method-note { display:flex; align-items:center; gap:5px; margin:7px 0 0; color:#617267; font-size:10.5px; line-height:1.3; }
+.explorer-method-note span { color:var(--green-700); font-weight:800; }
 #explorer-loading { flex:1; display:flex; align-items:center; gap:7px; color:var(--green-800); font-size:12px; font-weight:600; }
 .mini-spinner { width:14px; height:14px; flex:none; border:2px solid var(--green-200); border-top-color:var(--green-700); border-radius:50%; animation:spin .75s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
@@ -904,6 +917,13 @@ body {
 .rank-result:hover, .rank-result.selected { background:var(--green-50); border-color:var(--green-500); }
 .rank-row { grid-template-columns:20px minmax(0,1fr); }
 .rank-main { cursor:default; }
+.rank-main .rank-affiliation { margin-top:2px; color:var(--green-700); font-weight:600; }
+.rank-trust-row { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
+.affiliation-status, .topic-similarity { display:inline-flex; align-items:center; width:max-content; max-width:100%; padding:3px 6px; border:1px solid var(--green-200); border-radius:999px; background:#fff; color:var(--green-800); font-size:9.5px; font-weight:650; line-height:1.2; }
+.affiliation-status.verified-current { background:var(--green-100); border-color:var(--green-500); }
+.affiliation-status.last-known { background:#fff8e8; border-color:#e5c978; color:#725817; }
+.affiliation-status.unknown-status { background:#f4f4f4; border-color:#d9d9d9; color:#666; }
+.topic-similarity { border-color:#d8dde8; background:#f5f7fb; color:#4f5e76; }
 .rank-actions { grid-column:2; display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:6px; margin-top:4px; padding-right:2px; }
 .rank-actions .rank-distance { margin-right:auto; }
 .rank-distance { grid-column:auto; padding:0; cursor:default; color:#f5821e; }
@@ -925,7 +945,19 @@ body {
 .author-section h3 { margin-bottom:8px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--green-700); }
 .author-links { display:flex; gap:12px; flex-wrap:wrap; }
 .author-links a, #author-sidecar a { color:var(--green-800); text-decoration:underline; }
-.author-path-affiliation { margin:0 0 8px; font-size:12px; color:var(--green-700); }
+.author-path-affiliation { display:flex; flex-direction:column; gap:3px; margin:0 0 9px; padding:9px 10px; border:1px solid var(--green-200); border-radius:7px; background:rgba(255,255,255,.7); font-size:12px; color:var(--green-700); }
+.author-path-affiliation strong { font-size:11px; color:var(--green-800); }
+.author-path-affiliation span { color:#526359; line-height:1.45; }
+.author-path-affiliation.last-known { border-color:#e5c978; background:#fffaf0; }
+.author-path-affiliation.last-known strong { color:#725817; }
+.author-path-affiliation.unknown-status { border-color:#d9d9d9; background:#f7f7f7; }
+.path-verification { margin:8px 0 5px; padding:7px 9px; border-radius:6px; font-size:11px; line-height:1.4; }
+.path-verification.verified { border:1px solid var(--green-200); background:var(--green-100); color:var(--green-800); }
+.path-verification.unverified { border:1px solid #e5c978; background:#fff8e8; color:#725817; }
+.evidence-path .step-via { margin-top:2px; color:#667169; font-style:normal; }
+.evidence-path .step-via strong { color:var(--green-700); }
+.evidence-path .evidence-unverified .step-via strong { color:#725817; }
+.evidence-path .step-via a { overflow-wrap:anywhere; }
 .sidecar-loading { display:flex; align-items:center; gap:8px; padding:14px 0; color:var(--green-700); }
 .floating-tooltip { position:fixed; z-index:1000; width:min(280px,calc(100vw - 24px)); padding:10px 11px; border-radius:7px; background:var(--green-900); color:#fff; font-size:12px; line-height:1.45; box-shadow:0 5px 20px rgba(0,0,0,.24); pointer-events:none; }
 #empty-example, #search-pagination button.current, #view-switcher button.active { background:var(--green-900); border-color:var(--green-900); }
@@ -933,18 +965,41 @@ body {
 #edge-toggles input, #work-edge-toggles input, #label-toggles input { accent-color:var(--green-700); }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important; transition-duration:.01ms!important; } }
 @media (max-width:1100px) and (min-width:781px) {
-  #institution-explorer-shell { display:flex; flex-direction:column-reverse; }
-  #author-sidecar { width:clamp(400px, calc(100vw - 24px), 600px); min-width:0; max-height:46vh; }
+  /* Keep evidence in a viewport-bounded overlay. Stacking two independently
+     vh-bounded panels could exceed 100vh and strand the panel's top offscreen. */
+  #author-sidecar:not(.hidden) {
+    position:fixed;
+    inset:12px auto 12px 12px;
+    z-index:43;
+    width:min(600px,calc(100vw - 24px));
+    min-width:0;
+    max-height:none;
+    margin:0;
+  }
 }
 
 /* Below ~780px the 260px sidebar would take >1/3 of the width, so it becomes a
    full-screen overlay toggled by the Graph/Menu switcher instead of a column. */
 @media (max-width: 780px) {
-  #institution-explorer-shell { left:8px; right:8px; bottom:72px; display:block; }
+  #institution-explorer-shell {
+    --explorer-bottom:72px;
+    --explorer-top-clearance:56px;
+    --explorer-window-max:max(44px,min(62vh,calc(100vh - var(--explorer-bottom) - var(--explorer-top-clearance))));
+    left:8px;
+    right:8px;
+    display:block;
+  }
+  #institution-explorer-shell:has(+ #institution-info-tooltip + #graph-legend.hidden) { --explorer-bottom:72px; }
   .graph-window { width:100%; }
-  .explorer-content { max-height:calc(62vh - 44px); }
-  #author-sidecar { width:100%; min-width:0; max-height:52vh; margin-bottom:8px; }
-  #institution-explorer-shell:has(#author-sidecar:not(.hidden)) { display:flex; flex-direction:column-reverse; }
+  #author-sidecar:not(.hidden) {
+    position:fixed;
+    inset:56px 8px 72px;
+    z-index:43;
+    width:auto;
+    min-width:0;
+    max-height:none;
+    margin:0;
+  }
   .info-button { width:32px; height:32px; }
   #menu-toggle,
   #sidebar-resizer { display: none !important; }

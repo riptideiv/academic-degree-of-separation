@@ -19,6 +19,7 @@ async def find_path(
             "path": [{"author_id": source_id, "author_name": source_name,
                       "connection_to_next": None, "label": None, "direction": None}],
             "hops": 0,
+            "search_complete": True,
         }
         return
 
@@ -34,6 +35,7 @@ async def find_path(
     backward_depth_map: dict[str, int] = {target_id: 0}
     forward_depth: int = 0
     backward_depth: int = 0
+    search_complete = True
 
     for depth in range(max_depth):
         if not forward_frontier and not backward_frontier:
@@ -63,6 +65,9 @@ async def find_path(
         }
 
         neighbor_map = await backend.get_neighbors_batch(list(frontier))
+        complete_ids = getattr(neighbor_map, "complete_ids", set(frontier))
+        if not set(frontier).issubset(complete_ids):
+            search_complete = False
 
         new_frontier: set[str] = set()
         meetings: list[str] = []  # all meeting candidates found in this level
@@ -92,7 +97,13 @@ async def find_path(
                 key=lambda m: forward_depth_map.get(m, 0) + backward_depth_map.get(m, 0),
             )
             path = _reconstruct_path(best_meeting, forward_parents, backward_parents, names)
-            yield {"type": "result", "found": True, "path": path, "hops": len(path) - 1}
+            yield {
+                "type": "result",
+                "found": True,
+                "path": path,
+                "hops": len(path) - 1,
+                "search_complete": search_complete,
+            }
             return
 
         yield {
@@ -111,6 +122,7 @@ async def find_path(
         "type": "result",
         "found": False,
         "reason": f"No path found within {max_depth} hops",
+        "search_complete": search_complete,
     }
 
 

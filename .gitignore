@@ -8,4 +8,5 @@ __pycache__/
 venv/
 .superpowers/
 neighbor_cache.json
+neighbor_cache_v2.json
 *.local*

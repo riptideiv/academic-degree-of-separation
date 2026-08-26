@@ -44,7 +44,7 @@ shell or deployment platform. Do not commit `.env.local`.
 |---|---|
 | `OPENALEX_KEY` | OpenAlex API key used by all scholarly-data requests. Get a free key at [openalex.org/settings/api](https://openalex.org/settings/api). |
 | `OPENALEX_MAILTO` | Courtesy contact identifier sent to OpenAlex in the User-Agent and `mailto` parameter. |
-| `SUPABASE_POOLER_CONNECTION_STRING` | Supabase Supavisor **transaction pooler** Postgres connection string (normally port 6543). Enables the durable neighbor cache; without it the app uses `neighbor_cache.json`. |
+| `SUPABASE_POOLER_CONNECTION_STRING` | Supabase Supavisor **transaction pooler** Postgres connection string (normally port 6543). Enables the durable neighbor cache; without it the app uses `neighbor_cache_v2.json`. |
 | `SUPABASE_URL` | Supabase project URL. Kept with the project configuration for other Supabase integrations; the current asyncpg cache connects through `SUPABASE_POOLER_CONNECTION_STRING`. |
 | `SUPABASE_POOL_MAX` | Maximum asyncpg pool size for Supabase (default `5`). Keep this small for the transaction pooler. |
 | `NEIGHBOR_CACHE_MAX` | Maximum neighbor rings retained in the in-memory LRU (default `10000`). Durable-store contents are unaffected. |
@@ -79,6 +79,10 @@ backend/
   bfs.py              Bidirectional BFS path-finder
   graph_backend.py    OpenAlex graph backend (co-author / citation / institution edges)
   graph_expand.py     Neighborhood expansion (ranked BFS) for the visualization
+  affiliation_overrides.py  Reviewed exact-ID affiliation / work-scope corrections
+  data/affiliation_overrides.json  Official-source correction records
+  institution_ranking.py  Stable topic/citation candidate balancing and result order
+  path_evidence.py    Work-level author identity and path-continuity checks
   openalex_client.py  Thin async OpenAlex HTTP client (shared, pooled, HTTP/2,
                       author-metadata LRU)
   neighbor_store.py   Neighbor-ring cache: bounded LRU + durable store (JSON/Supabase)
@@ -102,10 +106,26 @@ tests/                pytest suite
    `path` event carrying the hop count and the ordered steps as soon as the search
    finishes.
 3. **Institution Explorer** (`/api/institution-suggestions`) treats author origins as
-   a research-interest profile. It ranks current-primary researchers at the selected
-   home institution using coauthorship paths only; citations and shared institutions
-   do not affect these suggestions. Profiles emphasize topics, representative works,
-   OpenAlex/ORCID links, with adding a suggestion to the graph as a secondary action.
+   a research-interest profile. It ranks affiliation candidates at the selected home
+   institution using coauthorship paths only. The UI distinguishes reviewed current
+   affiliations from OpenAlex last-known affiliations; the latter are not claimed as
+   current appointments. Candidate discovery merges reviewed corrections, highly
+   cited authors, exact-topic matches, and a broader subfield lane derived by grouping
+   institution-attributed works. This keeps low-citation but relevant researchers in
+   the bounded pool without scraping search engines or running one request per person.
+   It starts with a publication-evidence-checked two-hop coauthor set-join across the
+   whole pool. If the result page is not full, at most eight topic-first unmatched
+   candidates receive a deeper search under a 12-second request budget.
+   Citations and shared institutions do not affect these suggestions.
+   Candidate membership can include reviewed corrections backed by official university
+   pages, but the request path never performs a web search. Profiles emphasize topics,
+   representative works, OpenAlex/ORCID links, and clickable publication evidence for
+   every displayed coauthor hop. Aggregate/coauthor IDs only propose paths: every hop
+   is re-fetched from an exact work, reviewed identity scopes are enforced, and adjacent
+   works must carry a plausible continuity signal before an intermediate ID is trusted.
+   Coverage messages describe the bounded candidate set
+   and do not claim an exhaustive search of everyone at a university. Adding a suggestion
+   to the graph remains a secondary action.
 4. The **frontend** consumes the SSE stream, draws nodes/edges with Cytoscape, and
    lists the degrees of separation + shortest paths in the sidebar. Edge types share
    one color and are distinguished by dash pattern (solid = co-authorship, dashed =
@@ -129,6 +149,16 @@ among the nodes that are already on screen, so the connecting/middle nodes link 
 the network instead of forming isolated chains between the two hubs. This stitch pass
 reads only the neighbor cache (no extra OpenAlex calls), so edges between nodes whose
 rings were never fetched are simply not drawn.
+
+### Reviewed affiliation corrections
+
+When OpenAlex has a missing current affiliation, add a reviewed entry to
+`backend/data/affiliation_overrides.json` using exact OpenAlex author/institution IDs
+and an official university evidence URL. `action` may be `include` or `exclude`;
+exclusions win. Do not match corrections by name. For a conflated author profile, add
+`verified_work_ids` so coauthor paths and representative works use only the reviewed
+identity's publications. Omit that field for a clean author profile whose affiliation
+alone needs correction.
 
 ## Deployment
 

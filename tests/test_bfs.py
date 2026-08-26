@@ -80,6 +80,25 @@ async def test_no_path_found():
     assert "reason" in result
 
 
+async def test_no_path_from_incomplete_ring_is_not_reported_complete():
+    class NeighborMap(dict):
+        pass
+
+    class IncompleteBackend(MockBackend):
+        async def get_neighbors_batch(self, author_ids, cached_only=False):
+            values = NeighborMap({author_id: [] for author_id in author_ids})
+            values.complete_ids = set()
+            return values
+
+    backend = IncompleteBackend({})
+    events = await collect(
+        find_path(backend, "A1", "Alice", "B1", "Bob", max_depth=2)
+    )
+
+    assert events[-1]["found"] is False
+    assert events[-1]["search_complete"] is False
+
+
 async def test_progress_events_emitted():
     graph = {
         "A1": [edge("B1", "Bob")],
@@ -157,4 +176,3 @@ async def test_bfs_tolerates_neighbor_fetch_exception():
     # Should not crash; either found=False or found=True (depending on graph)
     assert result["type"] == "result"
     assert "found" in result
-
