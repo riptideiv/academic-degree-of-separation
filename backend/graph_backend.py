@@ -243,11 +243,15 @@ class OpenAlexBackend(GraphBackend):
         if _is_work_id(id_):
             node_kind = "work"
             active = self._work_edge_types
+            schema = "v3"
         else:
             node_kind = "author"
             active = self._edge_types
+            # v3 author rings omitted neighbors fetched in the same batch.
+            # Rebuild those rings; work rings were unaffected and remain warm.
+            schema = "v4"
         edge_scope = ",".join(sorted(active)) or "none"
-        return f"v3:{node_kind}:{edge_scope}:{id_}"
+        return f"{schema}:{node_kind}:{edge_scope}:{id_}"
 
     async def get_neighbors(self, author_id: str) -> list[Connection]:
         tasks = []
@@ -459,7 +463,9 @@ class OpenAlexBackend(GraphBackend):
                 #    failed go back through the claim loop.
                 pending = []
                 for i, fut in waiting.items():
-                    outcome = await fut
+                    # A timed-out/disconnected waiter must not cancel the shared
+                    # future and, in turn, every other request waiting on it.
+                    outcome = await asyncio.shield(fut)
                     if outcome is None:
                         pending.append(i)
                     else:
@@ -535,6 +541,11 @@ class OpenAlexBackend(GraphBackend):
         et = edge_types if edge_types is not None else self._edge_types
         author_set = set(author_ids)
         by_source: dict[str, list[Connection]] = {aid: [] for aid in author_ids}
+        # Repeated collaborations can appear in many publications. Keep the
+        # first paper's evidence without constructing duplicate edge objects.
+        coauthor_seen = (
+            {aid: {aid} for aid in author_ids} if "coauthor" in et else {}
+        )
 
         works = await self._client.get_works_by_authors(author_ids)
         self._require_untruncated_work_evidence(works, "shared author-works query")
@@ -597,8 +608,11 @@ class OpenAlexBackend(GraphBackend):
 
             if "coauthor" in et:
                 for src_id in frontier_in_work:
+                    seen_targets = coauthor_seen[src_id]
                     for coauthor_id, coauthor_name in work_author_map.items():
-                        if coauthor_id not in author_set:
+                        # Cached rings must be independent of the current batch.
+                        if coauthor_id not in seen_targets:
+                            seen_targets.add(coauthor_id)
                             by_source[src_id].append(Connection(
                                 target_author_id=coauthor_id,
                                 target_name=coauthor_name,
@@ -636,10 +650,12 @@ class OpenAlexBackend(GraphBackend):
                     fetch_summary(author_id) for author_id in incomplete_ids
                 ))
                 for source_id, summary in summaries:
+                    seen_targets = coauthor_seen[source_id]
                     for target_id, edge in summary.items():
                         target_id = _short_id(target_id)
-                        if target_id == source_id or target_id in author_set:
+                        if target_id in seen_targets:
                             continue
+                        seen_targets.add(target_id)
                         by_source[source_id].append(Connection(
                             target_author_id=target_id,
                             target_name=edge.get("name") or target_id,
@@ -672,12 +688,12 @@ class OpenAlexBackend(GraphBackend):
                     if not authorship.get("author") or not authorship["author"].get("id"):
                         continue
                     citer_id = _short_id(authorship["author"]["id"])
-                    if citer_id in author_set:
-                        continue
                     citer_name = authorship["author"].get("display_name", "")
                     for work_id in referenced & work_to_sources.keys():
                         title, src_ids = work_to_sources[work_id]
                         for src_id in src_ids:
+                            if citer_id == src_id:
+                                continue
                             incoming[src_id][citer_id] = Connection(
                                 target_author_id=citer_id,
                                 target_name=citer_name,
@@ -709,10 +725,10 @@ class OpenAlexBackend(GraphBackend):
                     if not author or not author.get("id"):
                         continue
                     target_id = _short_id(author["id"])
-                    if target_id in author_set:
-                        continue
                     target_name = author.get("display_name", "")
                     for src_id in src_ids:
+                        if target_id == src_id:
+                            continue
                         outgoing[src_id][target_id] = Connection(
                             target_author_id=target_id,
                             target_name=target_name,
@@ -864,14 +880,14 @@ class OpenAlexBackend(GraphBackend):
             complete_ids.clear()
         for colleague in colleagues:
             colleague_id = _short_id(colleague["id"])
-            if colleague_id in author_set:
-                continue
             colleague_name = colleague.get("display_name", "")
             for inst in (colleague.get("last_known_institutions") or []):
                 inst_id = _short_id(inst["id"])
                 if inst_id in inst_to_sources:
                     inst_name, src_ids = inst_to_sources[inst_id]
                     for src_id in src_ids:
+                        if colleague_id == src_id:
+                            continue
                         by_source[src_id].append(Connection(
                             target_author_id=colleague_id,
                             target_name=colleague_name,

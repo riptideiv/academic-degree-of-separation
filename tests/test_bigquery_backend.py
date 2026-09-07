@@ -73,11 +73,13 @@ async def test_failed_query_returns_empty_for_affected_authors():
     assert result["A1"] == []
 
 
-async def test_excludes_frontier_authors_from_results():
+async def test_retains_other_batch_sources_and_excludes_self_edges():
     backend = make_backend(edge_types={"coauthor"})
     fake_rows = [
-        # A2 is in the frontier — should be filtered out
+        # A2 is a different source in this batch and remains a valid neighbor.
         {"source_id": "A1", "target_id": "A2", "target_name": "Bob",
+         "connection_type": "coauthor", "label": "Paper 1"},
+        {"source_id": "A1", "target_id": "A1", "target_name": "Alice",
          "connection_type": "coauthor", "label": "Paper 1"},
         {"source_id": "A1", "target_id": "A3", "target_name": "Carol",
          "connection_type": "coauthor", "label": "Paper 1"},
@@ -86,8 +88,21 @@ async def test_excludes_frontier_authors_from_results():
         result = await backend.get_neighbors_batch(["A1", "A2"])
 
     ids = [c.target_author_id for c in result["A1"]]
-    assert "A2" not in ids
-    assert "A3" in ids
+    assert ids == ["A2", "A3"]
+
+
+@pytest.mark.parametrize("edge_type", ["citation", "institution"])
+async def test_queries_filter_self_per_source_instead_of_entire_batch(edge_type):
+    backend = make_backend(edge_types={edge_type})
+    with patch.object(backend, "_run_query", AsyncMock(return_value=[])) as query:
+        await backend.get_neighbors_batch(["A1", "A2"])
+
+    sql, params = query.await_args.args
+    assert "NOT IN UNNEST(@author_ids)" not in sql
+    source_alias = "aw" if edge_type == "citation" else "fi"
+    assert f"!= {source_alias}.source_author_id" in sql
+    assert params[0].values == ["https://openalex.org/A1", "https://openalex.org/A2"]
+    query.assert_awaited_once()
 
 
 async def test_edge_type_filtering_skips_unused_queries():

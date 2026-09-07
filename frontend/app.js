@@ -11,6 +11,7 @@
     // researcher to existing ones, so earlier pairs must persist here.
     paths: new Map(),
     activeSource: null,
+    cancelExpansion: null,
     isLoading: false,
     // When false (default), only the researchers of interest + the connecting
     // path are labeled; expansion ("neighborhood") names show on hover only.
@@ -379,6 +380,18 @@
     pendingController: null,
   };
 
+  document.getElementById('search-dialog')?.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSearchModal();
+    } else if (e.key === 'Tab') {
+      const controls = [...e.currentTarget.querySelectorAll('button:not(:disabled), input:not(:disabled), a[href], [tabindex="0"]')];
+      const first = controls[0], last = controls[controls.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    }
+  });
+
   searchBtn.addEventListener('click', () => runSearch('author', searchInput));
   searchInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') runSearch('author', searchInput);
@@ -446,9 +459,14 @@
   });
 
   async function configureStoredOpenAlexKey() {
-    const saved = localStorage.getItem(OPENALEX_KEY_STORAGE);
-    if (saved && openAlexKeyInput) {
-      openAlexKeyInput.value = saved;
+    // Migrate older saved keys into the private session cookie, then remove the
+    // script-readable copy. New keys are never written to localStorage.
+    let saved;
+    try {
+      saved = localStorage.getItem(OPENALEX_KEY_STORAGE);
+      localStorage.removeItem(OPENALEX_KEY_STORAGE);
+    } catch { /* storage may be unavailable */ }
+    if (saved) {
       await sendOpenAlexKey(saved, false);
       return;
     }
@@ -469,12 +487,13 @@
       openAlexKeyInput?.focus();
       return;
     }
-    localStorage.setItem(OPENALEX_KEY_STORAGE, key);
     await sendOpenAlexKey(key, true);
   }
 
+  document.getElementById('openalex-key-clear')?.addEventListener('click', () => sendOpenAlexKey('', true));
+
   async function sendOpenAlexKey(key, showSaved) {
-    setOpenAlexKeyStatus('Checking key…');
+    setOpenAlexKeyStatus(key ? 'Saving key…' : 'Removing key…');
     try {
       const r = await fetch(`${API_BASE}/api/openalex-key`, {
         method: 'POST',
@@ -483,12 +502,13 @@
       });
       if (!r.ok) throw new Error('key failed');
       const data = await r.json();
-      if (!data.configured) throw new Error('key missing');
+      if (key && !data.configured) throw new Error('key missing');
       const refreshSearch = !!searchSession.pendingController;
       cancelPageRequest();
       searchSession.pageCache.clear();
       if (refreshSearch) loadPage(searchSession.currentPage);
-      setOpenAlexKeyStatus(showSaved ? 'API key saved' : 'API key active');
+      if (openAlexKeyInput) openAlexKeyInput.value = '';
+      setOpenAlexKeyStatus(key ? (showSaved ? 'API key saved' : 'API key active') : 'Personal key removed');
     } catch {
       setOpenAlexKeyStatus('Could not save API key');
     }
@@ -566,7 +586,7 @@
     if (state.origins.size) runLayout();
   });
 
-  document.getElementById('clear-canvas')?.addEventListener('click', async () => {
+  document.getElementById('clear-canvas')?.addEventListener('click', () => {
     if (state.isLoading) return;
     // Wipe client state
     cy.elements().remove();
@@ -578,8 +598,7 @@
     document.getElementById('node-detail').classList.add('hidden');
     renderDegrees();
     clearSavedState();
-    // Wipe server-side neighbor cache so the next search re-fetches from OpenAlex
-    try { await fetch(`${API_BASE}/api/cache`, { method: 'DELETE' }); } catch { /* ignore */ }
+    runInstitutionRank();
   });
 
   // ── Search modal (shared by both author and work search) ──────────────────
@@ -590,7 +609,14 @@
         ? 'institutions'
         : 'authors';
     const r = await fetch(`${API_BASE}/api/${endpoint}?q=${encodeURIComponent(q)}&page=${page}&per_page=20`, { signal });
-    if (!r.ok) throw new Error('search failed');
+    if (!r.ok) {
+      let data;
+      try { data = await r.json(); } catch { /* non-JSON proxy errors */ }
+      const message = typeof data?.message === 'string' ? data.message : data?.detail;
+      throw Object.assign(new Error('search failed'), {
+        userMessage: typeof message === 'string' ? message : null,
+      });
+    }
     return r.json();
   }
 
@@ -625,7 +651,7 @@
       renderResultsList(data);
     } catch (err) {
       if (requestId !== searchSession.requestId || err?.name === 'AbortError') return;
-      renderSearchListMessage('Search failed. Please try again.');
+      renderSearchListMessage(err?.userMessage || 'Search failed. Please try again.');
     } finally {
       if (requestId === searchSession.requestId) searchSession.pendingController = null;
     }
@@ -1135,7 +1161,9 @@
 
   function openSearchModal() {
     const modal = document.getElementById('search-modal');
+    searchSession.returnFocus = document.activeElement;
     modal.classList.remove('hidden');
+    document.getElementById('search-close').focus?.();
     document.getElementById('search-backdrop').onclick = closeSearchModal;
     document.getElementById('search-close').onclick = closeSearchModal;
   }
@@ -1143,6 +1171,7 @@
   function closeSearchModal() {
     cancelPageRequest();
     document.getElementById('search-modal').classList.add('hidden');
+    searchSession.returnFocus?.focus?.();
   }
 
   // ── Persistence (localStorage) ─────────────────────────────────────────────
@@ -1253,7 +1282,11 @@
     searchInput.value = '';
     state.origins.add(author.id);
     addChip(author.id, author.display_name);
-    return startExpansion(author.id).then(() => { saveState(); return runInstitutionRank(); });
+    return startExpansion(author.id).then(async status => {
+      saveState();
+      if (status === 'done') await runInstitutionRank();
+      return status;
+    });
   }
 
   function addWork(work) {
@@ -1291,13 +1324,11 @@
     if (state.isLoading) return;
     state.origins.delete(id);
     document.querySelector(`.researcher-chip[data-id="${id}"]`)?.remove();
-    cy.getElementById(id).remove();  // Cytoscape auto-removes connected edges
 
-    // Collect pair keys that are now broken (both endpoints no longer present)
-    const brokenPairs = new Set();
+    // Only pairs with this researcher as an endpoint disappear. They may still
+    // be an intermediate researcher on a connection between remaining origins.
     for (const [key, d] of [...state.paths]) {
       if (d.from_id === id || d.to_id === id) {
-        brokenPairs.add(key);
         state.paths.delete(key);
       }
     }
@@ -1306,24 +1337,35 @@
     if (state.origins.size === 0) {
       cy.elements().remove();
       state.pathNodes.clear();
+      state.authorCache.clear();
       clearSavedState();
       runInstitutionRank();
       return;
     }
 
-    // Remove path nodes whose every recorded pair is now broken
-    cy.nodes('[type="path"]').forEach(n => {
-      const pairs = n.data('pathPairs') || [];
-      if (pairs.length === 0 || pairs.every(pk => brokenPairs.has(pk))) {
-        state.pathNodes.delete(n.id());
+    // Prune against all remaining pairs, so keys from earlier removals cannot
+    // keep an orphan alive. Rebuild membership after any origin-to-path change.
+    state.pathNodes.clear();
+    cy.nodes().forEach(n => {
+      const pairs = (n.data('pathPairs') || []).filter(pk => state.paths.has(pk));
+      n.data('pathPairs', pairs);
+      if (n.id() === id && pairs.length) n.data('type', 'path');
+      if ((n.id() === id || n.data('type') === 'path') && !pairs.length) {
+        state.authorCache.delete(n.id());
         n.remove();
+        return;
       }
+      if (n.data('type') === 'path') state.pathNodes.add(n.id());
+      state.authorCache.set(n.id(), n.data());
     });
 
     // Remove expansion nodes whose every generating origin is now gone
     cy.nodes('[type="expansion"]').forEach(n => {
-      const owners = n.data('expandOwners') || [];
-      if (owners.length === 0 || owners.every(o => !state.origins.has(o) && !state.pathNodes.has(o))) {
+      const owners = (n.data('expandOwners') || []).filter(o =>
+        state.origins.has(o) || state.pathNodes.has(o));
+      n.data('expandOwners', owners);
+      if (!owners.length) {
+        state.authorCache.delete(n.id());
         n.remove();
       }
     });
@@ -1398,34 +1440,33 @@
       };
     }
     if (nodeData.type === 'path') {
-      nodeData = { ...nodeData, pathPairs: nodeData.path_pair ? [nodeData.path_pair] : [] };
+      nodeData = { ...nodeData, pathPairs: nodeData.path_pair ? [nodeData.path_pair] : (nodeData.pathPairs || []) };
     }
 
-    state.authorCache.set(nodeData.id, nodeData);
     const existing = cy.getElementById(nodeData.id);
     if (existing.length) {
       const priority = { origin: 3, work: 3, path: 2, expansion: 1 };
+      const expandOwners = [...new Set([...(existing.data('expandOwners') || []), ...(nodeData.expandOwners || [])])];
+      const pathPairs = [...new Set([...(existing.data('pathPairs') || []), ...(nodeData.pathPairs || [])])];
       if ((priority[nodeData.type] || 0) > (priority[existing.data('type')] || 0)) {
-        existing.data({
-          ...nodeData,
-          expandOwners: existing.data('expandOwners') || nodeData.expandOwners || [],
-          pathPairs: [...(existing.data('pathPairs') || []), ...(nodeData.pathPairs || [])],
-        });
-      } else if (nodeData.type === 'path' && nodeData.path_pair) {
-        // Same type: merge the new pair key in without duplicating
-        const pairs = existing.data('pathPairs') || [];
-        if (!pairs.includes(nodeData.path_pair)) {
-          existing.data('pathPairs', [...pairs, nodeData.path_pair]);
-        }
+        existing.data(nodeData);
       }
+      // Different stream phases can rediscover a node for another origin or
+      // path. Preserve every owner even when its visual type already wins.
+      existing.data({ expandOwners, pathPairs });
+      if (existing.data('type') === 'path') state.pathNodes.add(nodeData.id);
+      else state.pathNodes.delete(nodeData.id);
+      state.authorCache.set(nodeData.id, existing.data());
       return;
     }
     // Seed a starting position near a connected or owner node so it appears in a
     // sensible spot immediately (origins are placed/pinned by the layout, so skip them).
     const el = { group: 'nodes', data: { ...nodeData } };
     if (nodeData.type !== 'origin') el.position = seedPosition(nodeData, seedHints);
-    cy.add(el);
+    const added = cy.add(el);
+    state.authorCache.set(nodeData.id, added.data());
     if (nodeData.type === 'path') state.pathNodes.add(nodeData.id);
+    else state.pathNodes.delete(nodeData.id);
   }
 
   function addEdge(edgeData) {
@@ -1449,6 +1490,7 @@
   // user can't trigger conflicting actions or cause the scheduleRebuild loop.
   function setLoading(loading) {
     state.isLoading = loading;
+    document.getElementById('stop-search')?.classList.toggle('hidden', !loading);
     // Graph-affecting controls
     ['edge-coauthor', 'edge-citation', 'edge-institution', 'work-edge-authorship',
       'work-edge-citation', 'neighborhood', 'apply-options',
@@ -1470,11 +1512,13 @@
 
   function startExpansion(newId, existingOverride) {
     return new Promise(resolve => {
-      if (state.activeSource) { state.activeSource.close(); state.activeSource = null; }
+      state.cancelExpansion?.();
       setLoading(true);
       showProgress('Connecting…');
 
-      cy.nodes('[type="expansion"]').remove();
+      const oldExpansionNodes = cy.nodes('[type="expansion"]');
+      oldExpansionNodes.forEach(n => state.authorCache.delete(n.id()));
+      oldExpansionNodes.remove();
 
       const existingOrigins = existingOverride
         ?? [...state.origins].filter(id => id !== newId);
@@ -1485,8 +1529,9 @@
       const params = new URLSearchParams({ new_id: newId });
       if (existingOrigins.length) params.set('origin_ids', existingOrigins.join(','));
       if (existingPathIds.length) params.set('path_ids', existingPathIds.join(','));
-      getEnabledEdges().forEach(e => params.append('edges', e));
-      getEnabledWorkEdges().forEach(e => params.append('work_edges', e));
+      const edges = getEnabledEdges(), workEdges = getEnabledWorkEdges();
+      (edges.length ? edges : ['none']).forEach(e => params.append('edges', e));
+      (workEdges.length ? workEdges : ['none']).forEach(e => params.append('work_edges', e));
       const nb = getNeighborhood();
       params.set('depth', nb.depth);
       params.set('top_k', nb.topK);
@@ -1510,25 +1555,66 @@
         }, delay);
       };
 
-      const finish = () => {
+      let finished = false;
+      const finish = (status = 'done') => {
+        if (finished) return;
+        finished = true;
+        source.close();
         clearTimeout(growTimer); growTimer = null; growForce = null;
-        if (state.activeSource === source) state.activeSource = null;
+        if (state.activeSource === source) {
+          state.activeSource = null;
+          state.cancelExpansion = null;
+        }
+        if (!cy.getElementById(newId).length) {
+          state.origins.delete(newId);
+          document.querySelector(`.researcher-chip[data-id="${newId}"]`)?.remove();
+        }
+        if (status !== 'done') {
+          for (const id of existingOrigins) {
+            const key = pairKey(newId, id);
+            if (state.paths.has(key) || !state.origins.has(newId)) continue;
+            state.paths.set(key, {
+              from_id: newId, from_name: cy.getElementById(newId).data('name') || newId,
+              to_id: id, to_name: cy.getElementById(id).data('name') || id,
+              found: false, hops: null, steps: [], search_complete: false,
+              edge_types: edges, work_edge_types: workEdges,
+              error: status, reason: status === 'cancelled' ? 'Search stopped. Apply options to try again.' : 'Connection search interrupted. Apply options to retry.',
+            });
+          }
+          renderDegrees();
+        }
         setLoading(false);
-        resolve();
+        resolve(status);
+      };
+      state.cancelExpansion = () => {
+        if (finished) return;
+        finish('cancelled');
+        hideProgress();
+        rescaleExpansionNodes();
+        applyNameVisibility();
+        applyEdgeFade();
+        runLayout();
       };
 
-      source.addEventListener('node', e => { addOrUpdateNode(JSON.parse(e.data)); scheduleGrow(); });
-      source.addEventListener('edge', e => { addEdge(JSON.parse(e.data)); scheduleGrow(); });
+      const listen = (type, handler) => source.addEventListener(type, e => {
+        if (finished) return;
+        try { handler(e); } catch {
+          showProgress('Could not read the search response. Apply options to retry.', true);
+          finish('error');
+        }
+      });
+      listen('node', e => { addOrUpdateNode(JSON.parse(e.data)); scheduleGrow(); });
+      listen('edge', e => { addEdge(JSON.parse(e.data)); scheduleGrow(); });
 
-      source.addEventListener('path', e => {
+      listen('path', e => {
         const d = JSON.parse(e.data);
-        state.paths.set(pairKey(d.from_id, d.to_id), d);
+        state.paths.set(pairKey(d.from_id, d.to_id), { ...d, edge_types: edges, work_edge_types: workEdges });
         renderDegrees();
       });
 
-      source.addEventListener('expansion', e => {
+      listen('expansion', e => {
         const data = JSON.parse(e.data);
-        showProgress(`Building neighborhood (depth ${data.depth}/3)…`);
+        showProgress(`Building neighborhood (depth ${data.depth})…`);
         // Nodes stream before their edges within an expansion event, so map
         // each new node to something it connects to for spawn seeding.
         const seedHints = new Map();
@@ -1540,11 +1626,11 @@
         scheduleGrow();
       });
 
-      source.addEventListener('progress', e => {
+      listen('progress', e => {
         showProgress(JSON.parse(e.data).message);
       });
 
-      source.addEventListener('done', () => {
+      listen('done', () => {
         source.close();
         hideProgress();
         rescaleExpansionNodes();
@@ -1557,20 +1643,19 @@
         finish();
       });
 
-      source.addEventListener('app_error', e => {
+      listen('app_error', e => {
         source.close();
         let msg = 'Error';
         try { msg = JSON.parse(e.data).message; } catch { /* ignore */ }
         showProgress('Error: ' + msg, true);
-        setTimeout(hideProgress, 5000);
-        finish();
+        finish('error');
       });
 
       source.onerror = () => {
         if (state.activeSource === source) {
           source.close();
-          hideProgress();
-          finish();
+          showProgress('Connection interrupted. Apply options to retry.', true);
+          finish('error');
         }
       };
     });
@@ -1591,9 +1676,20 @@
     cy.elements().remove();
     state.pathNodes.clear();
     state.paths.clear();
+    state.authorCache.clear();
     renderDegrees();
+    const attempted = new Set();
     for (let i = 0; i < order.length; i++) {
-      await startExpansion(order[i], order.slice(0, i));
+      attempted.add(order[i]);
+      const status = await startExpansion(order[i], order.slice(0, i));
+      if (status !== 'done') break;
+    }
+    // A stopped replay has not rendered its later origins yet. Keep the chips
+    // and IDs consistent with the partial graph that actually survived.
+    for (const id of order) {
+      if (attempted.has(id) && cy.getElementById(id).length) continue;
+      state.origins.delete(id);
+      document.querySelector(`.researcher-chip[data-id="${id}"]`)?.remove();
     }
     saveState();
   }
@@ -1651,7 +1747,7 @@
       animationDuration: 250,
       randomize: false,
       fit,
-      padding: 90,
+      padding: window.innerWidth <= 780 ? 32 : 90,
       nodeSeparation: lp.separation,
       idealEdgeLength: lp.edgeLength,
       nodeRepulsion: lp.repulsion,
@@ -1678,7 +1774,7 @@
         animationDuration: 700,
         randomize: true,
         fit: true,
-        padding: 90,
+        padding: window.innerWidth <= 780 ? 32 : 90,
         nodeSeparation: lp.separation,
         idealEdgeLength: lp.edgeLength,
         nodeRepulsion: lp.repulsion,
@@ -1702,7 +1798,7 @@
       componentSpacing: 160,
       randomize: true,
       fit: true,
-      padding: 90,
+      padding: window.innerWidth <= 780 ? 32 : 90,
     }).run();
   }
 
@@ -1733,6 +1829,8 @@
   }
 
   function degreesLabel(d) {
+    if (d.error) return 'search interrupted';
+    if (!d.found && d.search_complete === false) return 'search incomplete';
     if (!d.found) return 'no path found';
     return `${d.hops} degree${d.hops === 1 ? '' : 's'} of separation`;
   }
@@ -1756,6 +1854,14 @@
         `<div class="degrees-pair">${escHtml(d.from_name)} ↔ ${escHtml(d.to_name)}</div>` +
         `<div><a class="degrees-count" style="cursor:pointer" href="#" onclick="return false;"><span class="degrees-arrow">&#9660;</span> <strong style="text-decoration:underline">${escHtml(degreesLabel(d))}</strong></a></div>`;
       li.innerHTML = html;
+      if (d.search_complete === false || !d.found) {
+        const note = document.createElement('p');
+        note.className = 'degrees-note';
+        note.textContent = d.reason || (d.found
+          ? (d.hops > 1 ? 'Coverage is limited; a shorter path may exist.' : 'Connection found; surrounding graph coverage is limited.')
+          : 'No connection found in the searched records. Try other connection types.');
+        li.appendChild(note);
+      }
 
       // detail is inserted after count div
       li.querySelector('.degrees-count').addEventListener('click', () => toggleDegreeExpand(d, li.querySelector('.degrees-count')));
@@ -1776,11 +1882,59 @@
       .filter(e => document.getElementById(`work-edge-${e}`)?.checked);
   }
 
+  // ── Local graph tools ─────────────────────────────────────────────────────
+  document.getElementById('stop-search')?.addEventListener('click', () => state.cancelExpansion?.());
+  document.getElementById('fit-graph')?.addEventListener('click', () => {
+    if (cy.nodes().length) cy.fit(cy.elements(), 60);
+  });
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  document.getElementById('export-paths')?.addEventListener('click', () => {
+    if (state.isLoading || !cy.nodes().length) return;
+    const origins = [...state.origins].map(id => ({ id, name: cy.getElementById(id).data('name') || id }));
+    const report = window.ResearchExport.report({ origins, paths: [...state.paths.values()] });
+    downloadBlob(new Blob([report], { type: 'text/markdown;charset=utf-8' }), 'academia-connections.md');
+    document.getElementById('export-status').textContent = 'Connection report downloaded.';
+  });
+
+  document.getElementById('export-image')?.addEventListener('click', async () => {
+    if (state.isLoading || !cy.nodes().length) return;
+    const button = document.getElementById('export-image');
+    const status = document.getElementById('export-status');
+    button.disabled = true;
+    status.textContent = 'Preparing image…';
+    try {
+      const blob = await cy.png({ output: 'blob-promise', full: true, bg: '#fafafa', maxWidth: 2400, maxHeight: 1800 });
+      downloadBlob(blob, 'academia-graph.png');
+      status.textContent = 'Graph image downloaded.';
+    } catch {
+      status.textContent = 'Could not save the image. Try again with a smaller graph.';
+    } finally {
+      updateOverlays();
+    }
+  });
+
   // ── Empty state + legend visibility ────────────────────────────────────────
   // Empty state shows only on a blank, idle canvas; the legend only when there
   // is a graph to explain.
   function updateOverlays() {
     const hasNodes = cy.nodes().length > 0;
+    ['fit-graph', 'export-image'].forEach(id => {
+      const button = document.getElementById(id);
+      if (button) button.disabled = !hasNodes || state.isLoading;
+    });
+    const reportButton = document.getElementById('export-paths');
+    if (reportButton) reportButton.disabled = !hasNodes || state.isLoading;
     document.getElementById('empty-state')?.classList.toggle('hidden', hasNodes || state.isLoading);
     document.getElementById('graph-legend')?.classList.toggle('hidden', !hasNodes);
   }
@@ -1791,12 +1945,13 @@
     overlayTimer = setTimeout(updateOverlays, 50);
   });
 
-  // Example CTA: two researchers with a known, interesting 2-hop connection.
+  // Example CTA: collaborators with a short, quick-to-demonstrate connection.
   // Sequential on purpose — the second add computes the path to the first.
   document.getElementById('empty-example')?.addEventListener('click', async () => {
     if (state.isLoading || state.origins.size) return;
-    await addResearcher({ id: 'A5108093963', display_name: 'Geoffrey E. Hinton' });
-    await addResearcher({ id: 'A5072532913', display_name: 'Noam Chomsky' });
+    const status = await addResearcher({ id: 'A5108093963', display_name: 'Geoffrey E. Hinton' });
+    if (status !== 'done') return;
+    await addResearcher({ id: 'A5086198262', display_name: 'Yoshua Bengio' });
   });
 
   // ── Sidebar horizontal resize ──────────────────────────────────────────────
@@ -1933,6 +2088,9 @@
         document.body.classList.remove('mobile-menu-open');
         cy.resize();
       }
+      // Crossing the mobile breakpoint changes the canvas width drastically.
+      // Reframe once so a desktop pan does not leave every origin off-screen.
+      if (cy.nodes().length) cy.fit(cy.elements(), 60);
     }
     mq.addEventListener('change', syncMode);
     syncMode();

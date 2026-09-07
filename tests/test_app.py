@@ -122,7 +122,7 @@ async def test_rank_path_proposal_skips_discarded_metadata_hydration():
     assert client.mock_calls == []
 
 
-async def test_openalex_key_accepts_plain_text_payload():
+async def test_openalex_key_rejects_plain_text_payload():
     with patch("backend.app._client") as mock_client:
         mock_client.has_api_key = True
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
@@ -131,9 +131,8 @@ async def test_openalex_key_accepts_plain_text_payload():
                 content="test-openalex-key",
                 headers={"content-type": "text/plain"},
             )
-    assert resp.status_code == 200
-    assert resp.json() == {"configured": True}
-    mock_client.set_api_key.assert_called_once_with("test-openalex-key")
+    assert resp.status_code == 415
+    mock_client.set_api_key.assert_not_called()
 
 
 async def test_search_authors_returns_results():
@@ -713,8 +712,9 @@ async def test_institution_suggestions_caps_origin_fanout():
             )
 
     data = resp.json()
-    assert data["origin_ids"] == [f"A{index}" for index in range(10)]
-    assert data["omitted_origin_count"] == 2
+    assert resp.status_code == 422
+    assert "10 IDs" in data["detail"]
+    mock_client.get_institution_authors.assert_not_awaited()
 
 
 async def test_search_works_returns_results():
@@ -986,7 +986,8 @@ async def test_path_sse_yields_app_error_on_exception():
         if line.startswith("data:"):
             data = json.loads(line[5:].strip())
             if "message" in data:
-                assert "API down" in data["message"]
+                assert "could not finish" in data["message"]
+                assert "API down" not in data["message"]
                 break
 
 
@@ -1020,7 +1021,8 @@ async def test_graph_expand_failure_still_emits_paths_and_app_error():
     full_text = "".join(chunks)
     assert "event: path" in full_text
     assert "event: app_error" in full_text
-    assert "store down" in full_text
+    assert "could not finish" in full_text
+    assert "store down" not in full_text
     assert "event: done" not in full_text
     assert full_text.index("event: path") < full_text.index("event: app_error")
 
@@ -1087,12 +1089,13 @@ async def test_graph_expand_emits_path_as_soon_as_search_finishes():
     assert path_indices[0] < expansion_indices[-1]
 
 
-async def test_clear_cache_wipes_author_lru_too():
+async def test_clear_cache_wipes_author_lru_too(monkeypatch):
+    monkeypatch.setenv("CACHE_ADMIN_TOKEN", "test-admin-token")
     with patch("backend.app._client") as mock_client, \
          patch("backend.app._cache") as mock_cache:
         mock_cache.clear = AsyncMock()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.delete("/api/cache")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as ac:
+            resp = await ac.delete("/api/cache", headers={"Authorization": "Bearer test-admin-token"})
     assert resp.status_code == 200
     mock_cache.clear.assert_awaited_once()
     mock_client.clear_author_cache.assert_called_once()

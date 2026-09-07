@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 from unittest.mock import AsyncMock
+from backend.bfs import find_path
 from backend.graph_backend import IdentityScopedBackend, OpenAlexBackend, _NeighborBatch
 from backend.models import Connection
 from backend.neighbor_store import NeighborCache, NeighborStore
@@ -148,10 +149,9 @@ async def test_batch_coauthors():
     backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
     result = await backend.get_neighbors_batch(["A1", "A2"])
 
-    # A1 should see A3 as coauthor (A2 is in the frontier, filtered out)
+    # Each ring retains other sources in the batch so it can be reused later.
     a1_ids = {c.target_author_id for c in result["A1"]}
-    assert "A3" in a1_ids
-    assert "A2" not in a1_ids
+    assert a1_ids == {"A2", "A3"}
     mock_client.get_citing_works_for_works.assert_not_awaited()
     mock_client.get_works_batch.assert_not_awaited()
     mock_client.get_authors_batch.assert_not_awaited()
@@ -198,9 +198,8 @@ async def test_batch_institutions():
     assert any(c.label == "MIT" for c in inst)
 
 
-async def test_batch_excludes_frontier_authors():
+async def test_batch_rings_preserve_direct_paths_when_reused():
     mock_client = AsyncMock()
-    # A2 (also in frontier) co-authors with A1 — should be excluded
     mock_client.get_works_by_authors.return_value = [
         make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob"), ("A3", "Carol")])
     ]
@@ -209,9 +208,117 @@ async def test_batch_excludes_frontier_authors():
     backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
     result = await backend.get_neighbors_batch(["A1", "A2"])
 
-    a1_ids = {c.target_author_id for c in result["A1"]}
-    assert "A2" not in a1_ids
-    assert "A3" in a1_ids
+    assert result.complete_ids == {"A1", "A2"}
+    for source, expected in [("A1", {"A2", "A3"}), ("A2", {"A1", "A3"})]:
+        cached = await backend.get_neighbors_batch([source])
+        assert {c.target_author_id for c in cached[source]} == expected
+        assert cached.complete_ids == {source}
+
+    events = [
+        event async for event in find_path(
+            backend, "A1", "Alice", "A2", "Bob", max_depth=1,
+        )
+    ]
+    assert events[-1]["found"] is True
+    assert events[-1]["hops"] == 1
+    mock_client.get_works_by_authors.assert_awaited_once_with(["A1", "A2"])
+
+
+async def test_batch_grouped_coauthors_retain_other_sources_without_self_edges():
+    mock_client = AsyncMock()
+    works = {
+        "A1": make_work("W1", "First solo paper", [("A1", "Alice")]),
+        "A2": make_work("W2", "Second solo paper", [("A2", "Bob")]),
+    }
+    mock_client.get_works_by_authors.side_effect = lambda ids: WorkBatch(
+        [works[aid] for aid in ids], complete=False,
+    )
+    # Only the summaries contain the connection between the batched sources.
+    mock_client.get_coauthor_summary.return_value = SummaryBatch({
+        "A1": {"name": "Alice", "works_count": 1},
+        "A2": {"name": "Bob", "works_count": 1},
+    }, complete=True)
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
+
+    result = await backend.get_neighbors_batch(["A1", "A2"])
+
+    assert {c.target_author_id for c in result["A1"]} == {"A2"}
+    assert {c.target_author_id for c in result["A2"]} == {"A1"}
+    assert result.complete_ids == {"A1", "A2"}
+    assert mock_client.get_works_by_authors.await_count == 3
+    assert mock_client.get_coauthor_summary.await_count == 2
+
+
+async def test_repeated_coauthor_evidence_keeps_first_publication_label():
+    mock_client = AsyncMock()
+    authors = [("A1", "Alice"), ("A2", "Bob"), ("A3", "Carol")]
+    mock_client.get_works_by_authors.return_value = WorkBatch([
+        make_work("W1", "First shared paper", authors),
+        make_work("W2", "Second shared paper", authors),
+    ], complete=False)
+    mock_client.get_coauthor_summary.return_value = SummaryBatch({
+        aid: {"name": name, "label": "Grouped evidence", "works_count": 2}
+        for aid, name in authors
+    }, complete=True)
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
+
+    result = await backend.get_neighbors_batch(["A1", "A2"])
+
+    assert {c.target_author_id for c in result["A1"]} == {"A2", "A3"}
+    assert {c.target_author_id for c in result["A2"]} == {"A1", "A3"}
+    assert all(len(connections) == 2 for connections in result.values())
+    assert all(c.label == "First shared paper" for connections in result.values() for c in connections)
+
+
+@pytest.mark.parametrize("mutual", [False, True])
+async def test_batch_citations_retain_other_sources_without_self_edges(mutual):
+    mock_client = AsyncMock()
+    first = make_work("W1", "First paper", [("A1", "Alice")])
+    second = make_work("W2", "Second paper", [("A2", "Bob")])
+    first["referenced_works"] = ["https://openalex.org/W1", "https://openalex.org/W2"]
+    second["referenced_works"] = ["https://openalex.org/W2"]
+    if mutual:
+        second["referenced_works"].append("https://openalex.org/W1")
+    papers = WorkBatch([first, second], complete=True)
+    mock_client.get_works_by_authors.return_value = papers
+    mock_client.get_citing_works_for_works.return_value = papers
+    mock_client.get_works_batch.return_value = papers
+    backend = OpenAlexBackend(mock_client, edge_types={"citation"})
+
+    result = await backend.get_neighbors_batch(["A1", "A2"])
+
+    assert [(c.target_author_id, c.direction) for c in result["A1"]] == [
+        ("A2", "mutual" if mutual else "outgoing"),
+    ]
+    assert [(c.target_author_id, c.direction) for c in result["A2"]] == [
+        ("A1", "mutual" if mutual else "incoming"),
+    ]
+    assert result.complete_ids == {"A1", "A2"}
+    assert (await backend.get_neighbors_batch(["A1"]))["A1"] == result["A1"]
+    mock_client.get_works_by_authors.assert_awaited_once_with(["A1", "A2"])
+    mock_client.get_citing_works_for_works.assert_awaited_once()
+    mock_client.get_works_batch.assert_awaited_once()
+
+
+async def test_batch_institutions_retain_other_sources_without_self_edges():
+    mock_client = AsyncMock()
+    authors = [{
+        "id": f"https://openalex.org/{aid}",
+        "display_name": aid,
+        "last_known_institutions": [{"id": "https://openalex.org/I1", "display_name": "MIT"}],
+    } for aid in ["A1", "A2", "A3"]]
+    mock_client.get_authors_batch.return_value = WorkBatch(authors[:2], complete=True)
+    mock_client.get_institution_authors_batch.return_value = WorkBatch(authors, complete=True)
+    backend = OpenAlexBackend(mock_client, edge_types={"institution"})
+
+    result = await backend.get_neighbors_batch(["A1", "A2"])
+
+    assert {c.target_author_id for c in result["A1"]} == {"A2", "A3"}
+    assert {c.target_author_id for c in result["A2"]} == {"A1", "A3"}
+    assert result.complete_ids == {"A1", "A2"}
+    assert (await backend.get_neighbors_batch(["A1"]))["A1"] == result["A1"]
+    mock_client.get_authors_batch.assert_awaited_once_with(["A1", "A2"])
+    mock_client.get_institution_authors_batch.assert_awaited_once_with(["I1"])
 
 
 async def test_batch_failed_subquery_propagates():
@@ -486,6 +593,45 @@ async def test_concurrent_overlapping_batches_share_cache_miss():
     mock_client.get_authors_batch.assert_awaited_once_with(["A1"])
 
 
+async def test_cancelled_waiter_does_not_cancel_shared_fetch_or_other_waiters():
+    mock_client = AsyncMock()
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    async def slow_works(_author_ids):
+        fetch_started.set()
+        await release_fetch.wait()
+        return [make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob")])]
+
+    mock_client.get_works_by_authors.side_effect = slow_works
+    backend = OpenAlexBackend(mock_client, edge_types={"coauthor"})
+    owner = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
+    await asyncio.wait_for(fetch_started.wait(), timeout=1)
+    cancelled = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
+    survivor = asyncio.create_task(backend.get_neighbors_batch(["A1"]))
+    try:
+        await asyncio.sleep(0)  # both waiters attach while the owner is blocked
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        assert not owner.done()
+        assert not survivor.done()
+        release_fetch.set()
+        first, second = await asyncio.wait_for(asyncio.gather(owner, survivor), timeout=1)
+    finally:
+        release_fetch.set()
+        for task in (owner, cancelled, survivor):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(owner, cancelled, survivor, return_exceptions=True)
+
+    assert {c.target_author_id for c in first["A1"]} == {"A2"}
+    assert second == first
+    assert first.complete_ids == second.complete_ids == {"A1"}
+    assert not backend._inflight
+    mock_client.get_works_by_authors.assert_awaited_once_with(["A1"])
+
+
 async def test_citation_neighbors():
     mock_client = AsyncMock()
     citing_work = {
@@ -691,6 +837,43 @@ async def test_cache_is_namespaced_by_active_edge_set():
     mock_client.get_authors_batch.assert_awaited_once_with(["A1"])
 
 
+async def test_author_cache_upgrade_preserves_existing_work_rings():
+    mock_client = AsyncMock()
+    mock_client.get_works_by_authors.return_value = [
+        make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob")]),
+    ]
+    author_edge = Connection(
+        target_author_id="A1", target_name="Alice",
+        connection_type="authorship", label="Paper",
+    )
+    # A durable v3 author entry may be incomplete despite having been cached;
+    # v3 work entries are safe and should remain immediately reusable.
+    stored = {
+        "v3:author:coauthor:A1": [],
+        "v3:work:authorship:W1": [author_edge],
+    }
+    store = RecordingStore()
+    store.fetch = AsyncMock(side_effect=lambda ids: {i: stored[i] for i in ids if i in stored})
+    backend = OpenAlexBackend(
+        mock_client, edge_types={"coauthor"}, work_edge_types={"authorship"},
+        neighbor_cache=NeighborCache(store=store),
+    )
+
+    cached = await backend.get_neighbors_batch(["A1", "W1"], cached_only=True)
+    assert cached["W1"] == [author_edge]
+    assert cached.complete_ids == {"W1"}
+    mock_client.get_works_by_authors.assert_not_awaited()
+
+    fresh = await backend.get_neighbors_batch(["A1", "W1"])
+    assert {c.target_author_id for c in fresh["A1"]} == {"A2"}
+    assert fresh["W1"] == [author_edge]
+    assert fresh.complete_ids == {"A1", "W1"}
+    assert list(store.recorded[0]) == ["v4:author:coauthor:A1"]
+    assert (await backend.get_neighbors_batch(["A1"]))["A1"] == fresh["A1"]
+    mock_client.get_works_by_authors.assert_awaited_once_with(["A1"])
+    mock_client.get_works_batch.assert_not_awaited()
+
+
 async def test_plain_bounded_citation_ring_is_not_cached_as_complete():
     mock_client = AsyncMock()
     mock_client.get_works_by_authors.return_value = [
@@ -769,6 +952,23 @@ async def test_get_neighbors_batch_mixed_work_and_author_ids():
 
     assert result["W1"][0].target_author_id == "A9"
     assert result["A1"] == []
+
+
+async def test_mixed_batch_retains_work_authorship_edge_to_batched_author():
+    mock_client = AsyncMock()
+    mock_client.get_works_batch.return_value = [
+        make_work("W1", "A Paper", [("A1", "Alice")]),
+    ]
+    backend = OpenAlexBackend(
+        mock_client, edge_types=set(), work_edge_types={"authorship"},
+    )
+
+    result = await backend.get_neighbors_batch(["A1", "W1"])
+
+    assert [c.target_author_id for c in result["W1"]] == ["A1"]
+    assert result["A1"] == []
+    mock_client.get_works_batch.assert_awaited_once_with(["W1"])
+    mock_client.get_works_by_authors.assert_not_awaited()
 
 
 async def test_overlapping_batch_fetches_disjoint_ids_immediately():

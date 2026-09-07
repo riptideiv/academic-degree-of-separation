@@ -23,11 +23,13 @@ function harness() {
   const context = vm.createContext({
     API_BASE: '',
     AbortController,
+    openAlexKeyInput: { value: '' },
     openAlexKeyStatus: { textContent: '' },
     document: {
       getElementById(id) {
         if (!elements.has(id)) elements.set(id, {
           textContent: '', classList: { add() {}, remove() {} },
+          addEventListener() {},
         });
         return elements.get(id);
       },
@@ -38,7 +40,7 @@ function harness() {
         // wins the race. The generation check must protect the UI on its own.
         requests.push({
           url, signal, reject,
-          respond(data) { resolve({ ok: true, json: async () => data }); },
+          respond(data, ok = true) { resolve({ ok, json: async () => data }); },
         });
       });
     },
@@ -180,6 +182,16 @@ test('an active network failure remains visible and can be retried', async () =>
   h.requests[1].respond(current);
   await retry;
   assert.deepEqual(h.rendered, [current]);
+});
+
+test('safe server error messages tell the user how to recover', async () => {
+  const h = harness();
+  const pending = h.actions.loadPage(1);
+  const message = 'OpenAlex rejected the API key. Update your key in Advanced settings.';
+  h.requests[0].respond({ code: 'upstream_auth', message }, false);
+  await pending;
+  assert.deepEqual(h.messages, ['Searching…', message]);
+  assert.equal(h.session.pageCache.size, 0);
 });
 
 test('saving an API key restarts an active search and discards pre-key results', async () => {

@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import importlib.util
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,7 @@ from dotenv import load_dotenv
 
 REPO = Path(__file__).resolve().parent.parent
 load_dotenv(REPO / ".env.local", override=False)
+CACHE_ADMIN_TOKEN = os.environ.get("CACHE_ADMIN_TOKEN") or secrets.token_urlsafe(32)
 
 _spec = importlib.util.spec_from_file_location("bench_search", REPO / "scripts" / "bench_search.py")
 bench = importlib.util.module_from_spec(_spec)
@@ -58,8 +60,11 @@ async def _wait_healthy(base: str, timeout: float = 20.0) -> None:
 
 def _start_server(cwd: Path, port: int) -> subprocess.Popen:
     env = os.environ.copy()
-    env.pop("SUPABASE_POOLER_CONNECTION_STRING", None)
-    env.pop("SUPABASE_DB_URL", None)  # keep old baseline refs isolated too
+    # Empty inherited values also stop each app's .env.local loader from restoring
+    # shared database credentials after startup. Removing the variables does not.
+    env["SUPABASE_POOLER_CONNECTION_STRING"] = ""
+    env["SUPABASE_DB_URL"] = ""  # keep old baseline refs isolated too
+    env["CACHE_ADMIN_TOKEN"] = CACHE_ADMIN_TOKEN
     return subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "backend.app:app", "--port", str(port)],
         cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -70,7 +75,7 @@ async def _timed_cold(base: str, a_name: str, b_name: str, edges: list[str] | No
     async with httpx.AsyncClient(base_url=base, timeout=bench.TIMEOUT_S) as client:
         a = await bench.resolve(client, a_name)
         b = await bench.resolve(client, b_name)
-        await client.delete("/api/cache")
+        await bench.reset_cache(client, admin_token=CACHE_ADMIN_TOKEN)
         return await bench.run_case(client, a[0], b[0], edges=edges)
 
 
@@ -88,6 +93,8 @@ async def main() -> None:
     ap.add_argument("--allow-shared-store", action="store_true",
                     help="proceed even if a server's neighbor store is the shared Supabase table")
     args = ap.parse_args()
+    if args.rounds < 1:
+        ap.error("--rounds must be at least 1")
 
     a_name, b_name = args.pair.split("::", 1)
     edges = [e for e in args.edges.split(",") if e] or None
@@ -119,7 +126,7 @@ async def main() -> None:
             for label, url in (("baseline", base_url), ("working", work_url)):
                 r = await _timed_cold(url, a_name, b_name, edges)
                 results[label].append(r)
-                note = " [ABORTED]" if r.get("aborted") else ""
+                note = f" [{r['status']}]"
                 print(f"round {rnd + 1} {label}: cold {r['seconds']:.1f}s (hops={r['hops']}){note}",
                       flush=True)
                 await asyncio.sleep(args.gap)
@@ -128,10 +135,16 @@ async def main() -> None:
               f"{args.rounds} interleaved rounds) ==")
         for label in ("baseline", "working"):
             runs = results[label]
-            avg = sum(r["seconds"] for r in runs) / len(runs)
+            successful = [r for r in runs if r["successful"]]
+            avg = (
+                f"{sum(r['seconds'] for r in successful) / len(successful):.1f}s"
+                if successful else "n/a"
+            )
             times = ", ".join(f"{r['seconds']:.1f}s" for r in runs)
             hops = {r["hops"] for r in runs}
-            print(f"{label:<9} avg {avg:6.1f}s  ({times})  hops={sorted(hops, key=str)}")
+            print(f"{label:<9} successful {len(successful)}/{len(runs)} avg {avg}  ({times})  hops={sorted(hops, key=str)}")
+        if any(not run["successful"] for runs in results.values() for run in runs):
+            raise SystemExit("Incomplete A/B benchmark: failed/no-path runs cannot establish a speed improvement.")
     finally:
         for p in procs:
             p.terminate()

@@ -12,6 +12,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import time
 
 import httpx
@@ -52,16 +53,28 @@ async def ensure_disposable_store(client: httpx.AsyncClient, allow_shared: bool)
 
 
 async def resolve(client: httpx.AsyncClient, name: str) -> tuple[str, str]:
-    # Retry through transient OpenAlex 429s surfaced as 500s by the app.
+    # Retry explicit service failures; an empty fallback is not a resolved author.
     for attempt in range(5):
         r = await client.get("/api/authors", params={"q": name, "per_page": 1})
-        if r.status_code >= 500 and attempt < 4:
+        if (r.status_code >= 500 or r.status_code == 429) and attempt < 4:
             await asyncio.sleep(10 * (attempt + 1))
             continue
         r.raise_for_status()
-        top = r.json()["results"][0]
+        data = r.json()
+        if not data.get("results"):
+            raise RuntimeError(f"Could not resolve {name}: {data.get('message') or 'no author results'}")
+        top = data["results"][0]
         return top["id"], top["display_name"]
     raise RuntimeError(f"could not resolve {name}")
+
+
+async def reset_cache(client: httpx.AsyncClient, admin_token: str | None = None) -> None:
+    token = admin_token if admin_token is not None else os.environ.get("CACHE_ADMIN_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    response = await client.delete("/api/cache", headers=headers)
+    response.raise_for_status()
+    if response.json().get("cleared") is not True:
+        raise RuntimeError("Server did not confirm a cache reset; refusing to label this a cold run.")
 
 
 async def consume_expand(client: httpx.AsyncClient, params: dict) -> dict:
@@ -70,6 +83,9 @@ async def consume_expand(client: httpx.AsyncClient, params: dict) -> dict:
     counts = {"node": 0, "edge": 0, "expansion_nodes": 0, "expansion_edges": 0}
     hops = None
     event = None
+    paths = []
+    errors = []
+    done = False
     async with client.stream("GET", "/api/graph/expand", params=params) as resp:
         resp.raise_for_status()
         async for line in resp.aiter_lines():
@@ -77,6 +93,7 @@ async def consume_expand(client: httpx.AsyncClient, params: dict) -> dict:
                 event = line[7:].strip()
             elif line.startswith("data: ") and event:
                 if event == "done":
+                    done = True
                     break
                 data = json.loads(line[6:])
                 if event == "node":
@@ -88,12 +105,34 @@ async def consume_expand(client: httpx.AsyncClient, params: dict) -> dict:
                     counts["expansion_edges"] += len(data.get("edges", []))
                 elif event == "path":
                     hops = data.get("hops")
+                    paths.append(data)
                 elif event == "app_error":
-                    raise RuntimeError(f"app_error: {data.get('message')}")
-            elif line == "" :
-                if event == "done":
-                    break
-    return {"seconds": time.perf_counter() - t0, "hops": hops, **counts}
+                    errors.append(data.get("message") or "Unknown application error")
+            elif line == "":
+                event = None
+    expected_paths = len({
+        value.strip() for value in params.get("origin_ids", "").split(",")
+        if value.strip() and value.strip() != params.get("new_id")
+    })
+    if errors or any(path.get("error") for path in paths):
+        status = "error"
+    elif not done:
+        status = "interrupted"
+    elif len(paths) != expected_paths:
+        status = "incomplete"
+    elif any(not path.get("found") and not path.get("search_complete", False) for path in paths):
+        status = "incomplete"
+    elif any(not path.get("found") for path in paths):
+        status = "no_path"
+    elif any(type(path.get("hops")) is not int or path["hops"] < 0 for path in paths):
+        status = "incomplete"
+    else:
+        status = "found" if expected_paths else "expanded"
+    return {
+        "seconds": time.perf_counter() - t0, "hops": hops,
+        "status": status, "successful": status in ("found", "expanded"),
+        "stream_complete": done, "paths": paths, "errors": errors, **counts,
+    }
 
 
 async def run_case(
@@ -104,7 +143,9 @@ async def run_case(
     if edges:
         base["edges"] = edges
     # Add origin A alone (not timed) so B's run includes the A<->B path search.
-    await consume_expand(client, {"new_id": a_id, **base})
+    seed = await consume_expand(client, {"new_id": a_id, **base})
+    if not seed["successful"]:
+        raise RuntimeError(f"Initial origin expansion failed ({seed['status']}); benchmark is incomplete.")
     t0 = time.perf_counter()
     try:
         return await asyncio.wait_for(
@@ -112,7 +153,10 @@ async def run_case(
             timeout=abort_after,
         )
     except asyncio.TimeoutError:
-        return {"seconds": time.perf_counter() - t0, "hops": None, "aborted": True}
+        return {
+            "seconds": time.perf_counter() - t0, "hops": None,
+            "aborted": True, "status": "aborted", "successful": False,
+        }
 
 
 async def main() -> None:
@@ -140,13 +184,13 @@ async def main() -> None:
             a_id, _ = ids[a_name]
             b_id, _ = ids[b_name]
 
-            await client.delete("/api/cache")
+            await reset_cache(client)
             cold = await run_case(client, a_id, b_id,
                                   edges=edges, abort_after=args.abort_after)
             warm = await run_case(client, a_id, b_id,
                                   edges=edges, abort_after=args.abort_after)
             rows.append((a_name, b_name, cold, warm))
-            note = " [ABORTED]" if cold.get("aborted") or warm.get("aborted") else ""
+            note = f" [{cold['status']} / {warm['status']}]"
             print(
                 f"{a_name} <-> {b_name}: cold {cold['seconds']:.1f}s "
                 f"(hops={cold['hops']}), warm {warm['seconds']:.1f}s (hops={warm['hops']})"
@@ -160,9 +204,18 @@ async def main() -> None:
         for a, b, cold, warm in rows:
             print(f"{a + ' <-> ' + b:<40} {cold['seconds']:>7.1f} {warm['seconds']:>7.1f} "
                   f"{str(cold['hops']):>4}")
-        cold_avg = sum(c["seconds"] for _, _, c, _ in rows) / len(rows)
-        warm_avg = sum(w["seconds"] for _, _, _, w in rows) / len(rows)
-        print(f"{'AVERAGE':<40} {cold_avg:>7.1f} {warm_avg:>7.1f}")
+        for label, runs in (
+            ("cold", [cold for _, _, cold, _ in rows]),
+            ("warm", [warm for _, _, _, warm in rows]),
+        ):
+            successful = [run for run in runs if run["successful"]]
+            average = (
+                f"{sum(run['seconds'] for run in successful) / len(successful):.1f}s"
+                if successful else "n/a"
+            )
+            print(f"{label}: successful {len(successful)}/{len(runs)}; successful-path average {average}")
+        if any(not run["successful"] for _, _, cold, warm in rows for run in (cold, warm)):
+            raise SystemExit("Incomplete benchmark: failed/no-path runs are excluded from speed averages.")
 
 
 if __name__ == "__main__":

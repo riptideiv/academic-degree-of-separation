@@ -51,6 +51,7 @@ shell or deployment platform. Do not commit `.env.local`.
 | `BACKEND` | Graph backend: `openalex` (default) or `bigquery`. |
 | `GOOGLE_CLOUD_PROJECT` | Required only when `BACKEND=bigquery`. |
 | `OPENALEX_CONCURRENCY` | Optional maximum number of concurrent OpenAlex requests; defaults to `15` with a key and `8` without one. |
+| `CACHE_ADMIN_TOKEN` | Optional secret for server cache administration. `DELETE /api/cache` requires this token as a Bearer credential; without it, cache deletion is disabled. Normal searches need no admin token. |
 
 Example `.env.local`:
 
@@ -72,6 +73,22 @@ The suite mocks all network access (`respx` for HTTP, `AsyncMock`/`ASGITransport
 the app), so it's fast and offline.
 When Node.js is available, pytest also runs the dependency-free JavaScript tests
 for search request ordering; otherwise that check is skipped.
+GitHub Actions runs the full suite on Python 3.12 and 3.13, plus the JavaScript
+behavior and syntax checks with Node.js 24.
+
+For a live search comparison against a previous commit:
+
+```bash
+python scripts/bench_ab.py --ref HEAD~1 --rounds 3 --edges coauthor \
+  --pair "Geoffrey Hinton::Yoshua Bengio"
+```
+
+The benchmark alternates isolated servers, authenticates and verifies cache resets,
+and checks that streams finish with the expected path results. Failed, interrupted,
+and no-path runs are reported separately and cause an unsuccessful benchmark exit;
+they cannot count as a speed improvement. Live runs consume the configured OpenAlex
+allowance. For `bench_search.py` against an existing server, set `CACHE_ADMIN_TOKEN`
+to the same value configured on that server.
 
 ## Project layout
 
@@ -144,13 +161,56 @@ tests/                pytest suite
    clicking the handle, or folded to the left with the **☰ menu button**; widths and
    card states persist across reloads. On narrow screens (phones) the sidebar becomes a
    full-screen overlay and a segmented **Graph / Menu** switcher at the top toggles
-   between the graph and the controls.
+  between the graph and the controls.
+
+**Stop search** closes the active stream and keeps the graph and paths already
+received. Incomplete or interrupted pair searches are labeled explicitly; use
+**Apply options** to retry. Turning off every connection type now means no edges
+of that kind, including when all work connections are disabled.
+
+**Fit graph** brings the network back into view without rerunning a layout or
+search. **Save image** downloads a PNG of the whole network, and **Download
+connection report** saves a Markdown report containing ordered paths, OpenAlex
+profile links, citation directions, search options, and coverage limitations.
+Exports run locally and do not include API keys. **Clear canvas** clears only this
+browser's graph; it preserves the shared cache for fast future searches. The search
+dialog supports Escape, keyboard focus containment, and focus restoration.
 
 After expanding each researcher's neighborhood, the backend also adds the real edges
 among the nodes that are already on screen, so the connecting/middle nodes link into
 the network instead of forming isolated chains between the two hubs. This stitch pass
 reads only the neighbor cache (no extra OpenAlex calls), so edges between nodes whose
 rings were never fetched are simply not drawn.
+
+Author rings now use the `v4` cache namespace: older author rings could omit links
+to authors fetched in the same batch. They are rebuilt on first use rather than
+trusted as complete, so the first search after upgrading can have cold author-cache
+misses. Unaffected work rings retain their `v3` namespace. No durable table or JSON
+file is deleted during this migration. Repeated coauthors are deduplicated before
+constructing connections, retaining the first publication's evidence without extra
+API requests.
+
+### Browser keys and API boundaries
+
+Personal OpenAlex keys are set through a same-origin JSON request to
+`POST /api/openalex-key` (`{"api_key":"..."}`). They live in an HttpOnly,
+SameSite=Strict session cookie scoped to `/api`, marked Secure over HTTPS. A
+personal key applies only to that browser's requests and never replaces the
+deployment key. Sending an empty key removes the personal override and falls back
+to the deployment key. Old localStorage keys are migrated once and removed;
+the input is cleared after saving. Key endpoints use `Cache-Control: no-store`.
+
+Graph endpoints accept canonical author/work IDs or their OpenAlex URLs and reject
+malformed values before making upstream requests. An expansion accepts up to 25
+existing origins and 500 path IDs; Institution Explorer accepts up to 10 origins.
+Excess input returns HTTP 422 instead of silently dropping researchers. Omitted
+edge options retain the API defaults; `edges=none` or `work_edges=none` explicitly
+disables that group. Mixing `none` with another type is invalid.
+
+Serve the UI and API from the same HTTPS origin in production. Public API errors
+contain safe messages and codes; upstream URLs containing credentials are never
+returned in error responses. Configure `CACHE_ADMIN_TOKEN` only when remote cache
+administration is needed, and keep it out of browser code.
 
 ### Reviewed affiliation corrections
 

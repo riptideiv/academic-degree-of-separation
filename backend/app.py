@@ -3,8 +3,11 @@ import json
 import logging
 import math
 import os
+import re
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
@@ -13,9 +16,9 @@ from dotenv import load_dotenv
 # Render. override=False means real environment vars (Render's) always win.
 load_dotenv(Path(__file__).parent.parent / ".env.local", override=False)
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.affiliation_overrides import (
@@ -55,7 +58,7 @@ from backend.neighbor_store import (
     NeighborStore,
     SupabaseNeighborStore,
 )
-from backend.openalex_client import OpenAlexClient, _short_id
+from backend.openalex_client import OpenAlexClient, _short_id, request_api_key
 from backend.path_evidence import (
     evaluate_edge_profile_compatibility,
     evaluate_intermediate_coherence,
@@ -63,14 +66,40 @@ from backend.path_evidence import (
 
 log = logging.getLogger(__name__)
 
+_KEY_COOKIE = "openalex_personal_key"
+GRAPH_ORIGIN_MAX = 25
+GRAPH_PATH_ID_MAX = 500
+
+
+class _OpenAlexKeyMiddleware:
+    """Keep browser credentials isolated for the full lifetime of an SSE stream."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        key = Request(scope).cookies.get(_KEY_COOKIE)
+        if not key or len(key) > 512 or any(ord(char) < 33 or ord(char) > 126 for char in key):
+            key = None
+        token = request_api_key.set(key)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            request_api_key.reset(token)
+
+
 app = FastAPI(title="Researcher Degree of Separation")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
+app.add_middleware(_OpenAlexKeyMiddleware)
 
 _client = OpenAlexClient()
 _BACKEND = os.environ.get("BACKEND", "openalex")
@@ -131,9 +160,14 @@ RANK_ORIGIN_MAX = 10
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await _store.open()
-    yield
-    await _store.close()
+    try:
+        await _store.open()
+        yield
+    finally:
+        try:
+            await _store.close()
+        finally:
+            await _client.aclose()
 
 
 app.router.lifespan_context = lifespan
@@ -298,6 +332,76 @@ def _rate_limit_message() -> str:
         "The configured OpenAlex API key was rejected or reached its limit. Open Advanced "
         "settings at the bottom of the menu to add your own free key. Showing saved results when available."
     )
+
+
+def _error_payload(exc: BaseException) -> dict:
+    """Public errors must never contain upstream URLs, credentials, or traces."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status == 429:
+            return {"code": "rate_limited", "message": _rate_limit_message()}
+        if status in (401, 403):
+            return {
+                "code": "upstream_auth",
+                "message": "OpenAlex rejected the API key. Update your key in Advanced settings.",
+            }
+        if status == 404:
+            return {"code": "not_found", "message": "OpenAlex could not find that researcher or paper."}
+    if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)):
+        return {"code": "timeout", "message": "The search timed out. Please try again."}
+    if isinstance(exc, httpx.RequestError):
+        return {"code": "upstream_unavailable", "message": "Could not reach OpenAlex. Please try again."}
+    return {"code": "search_failed", "message": "The search could not finish. Please try again."}
+
+
+@app.exception_handler(httpx.HTTPStatusError)
+async def upstream_status_error(request: Request, exc: httpx.HTTPStatusError):
+    status = exc.response.status_code
+    return JSONResponse(
+        _error_payload(exc), status_code=status if status in (404, 429) else 502
+    )
+
+
+@app.exception_handler(httpx.RequestError)
+async def upstream_request_error(request: Request, exc: httpx.RequestError):
+    return JSONResponse(_error_payload(exc), status_code=502)
+
+
+def _require_same_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if origin is not None:
+        try:
+            parsed = urlsplit(origin)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Invalid request origin.") from None
+        if (parsed.scheme, parsed.netloc.casefold()) != (
+            request.url.scheme, request.url.netloc.casefold()
+        ):
+            raise HTTPException(status_code=403, detail="Cross-origin writes are not allowed.")
+
+
+def _validate_id(value: str, prefixes: str = "AW") -> str:
+    match = re.fullmatch(
+        rf"(?:https?://openalex\.org/)?([{prefixes}][0-9]+)/*", value.strip(), re.IGNORECASE
+    )
+    if not match or len(value) > 64:
+        raise HTTPException(status_code=422, detail=f"Expected an OpenAlex {prefixes} ID.")
+    return match.group(1).upper()
+
+
+def _validate_ids(values: list[str], maximum: int, prefixes: str = "AW") -> list[str]:
+    if len(values) > maximum:
+        raise HTTPException(status_code=422, detail=f"At most {maximum} IDs are allowed.")
+    return list(dict.fromkeys(_validate_id(value, prefixes) for value in values))
+
+
+def _validate_edges(values: list[str], allowed: set[str]) -> set[str]:
+    selected = set(values)
+    if selected == {"none"}:
+        return set()
+    if not selected.issubset(allowed):
+        raise HTTPException(status_code=422, detail="Unknown or conflicting edge types.")
+    return selected
 
 
 def _override_action(override: AffiliationOverride) -> str:
@@ -772,11 +876,15 @@ async def _collect_path(
     steps: list[dict] = []   # ordered hops along the path (names + paper/label)
     found = False
     hops: int | None = None
-    search_complete = True
+    search_complete = False
+    reason = "incomplete"
+    error = None
 
     async for event in find_path(backend, from_id, from_name, to_id, to_name, max_depth=max_depth):
         if event.get("type") == "result":
             search_complete = bool(event.get("search_complete", True))
+            reason = event.get("reason")
+            error = event.get("error")
         if event.get("type") == "result" and event.get("found"):
             found = True
             hops = event.get("hops")
@@ -866,6 +974,8 @@ async def _collect_path(
         "to_id": to_id,
         "to_name": to_name,
         "search_complete": search_complete,
+        "reason": reason,
+        "error": error,
     }
 
 
@@ -1018,28 +1128,55 @@ async def health():
 
 
 @app.get("/api/openalex-key")
-async def openalex_key_status():
-    return {"configured": _client.has_api_key}
+async def openalex_key_status(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return {"configured": _client.has_api_key, "source": _client.key_source}
 
 
 @app.post("/api/openalex-key")
-async def set_openalex_key(request: Request):
-    api_key = request.query_params.get("api_key", "").strip()
-    if not api_key:
-        body = await request.body()
-        if body:
-            try:
-                data = json.loads(body)
-                api_key = str(data.get("api_key", "")).strip()
-            except json.JSONDecodeError:
-                api_key = body.decode("utf-8", errors="ignore").strip()
-    _client.set_api_key(api_key)
-    return {"configured": _client.has_api_key}
+async def set_openalex_key(request: Request, response: Response):
+    _require_same_origin(request)
+    if request.query_params:
+        raise HTTPException(status_code=422, detail="Send API keys in a JSON body, never in the URL.")
+    if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
+        raise HTTPException(status_code=415, detail="Send an application/json body.")
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 1024:
+            raise HTTPException(status_code=413, detail="API key payload is too large.")
+    try:
+        data = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=422, detail="Invalid JSON body.") from None
+    api_key = data.get("api_key") if isinstance(data, dict) else None
+    if not isinstance(api_key, str) or len(api_key) > 512:
+        raise HTTPException(status_code=422, detail="api_key must be a string of at most 512 characters.")
+    api_key = api_key.strip()
+    if any(ord(char) < 33 or ord(char) > 126 for char in api_key):
+        raise HTTPException(status_code=422, detail="API keys cannot contain whitespace or control characters.")
+    response.headers["Cache-Control"] = "no-store"
+    if api_key:
+        response.set_cookie(
+            _KEY_COOKIE, api_key, path="/api", httponly=True,
+            secure=request.url.scheme == "https", samesite="strict",
+        )
+        return {"configured": True, "source": "personal"}
+    response.delete_cookie(
+        _KEY_COOKIE, path="/api", httponly=True,
+        secure=request.url.scheme == "https", samesite="strict",
+    )
+    # Clearing a personal key falls back to the deployment key.
+    token = request_api_key.set(None)
+    try:
+        return {"configured": _client.has_api_key, "source": _client.key_source}
+    finally:
+        request_api_key.reset(token)
 
 
 @app.get("/api/authors", response_model=PaginatedAuthors)
 async def search_authors(
-    q: str = Query(..., min_length=2),
+    q: str = Query(..., min_length=2, max_length=300),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=50),
 ):
@@ -1064,7 +1201,7 @@ async def search_authors(
 
 @app.get("/api/works", response_model=PaginatedWorks)
 async def search_works(
-    q: str = Query(..., min_length=2),
+    q: str = Query(..., min_length=2, max_length=300),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=50),
 ):
@@ -1086,7 +1223,7 @@ async def search_works(
 
 @app.get("/api/institutions")
 async def search_institutions(
-    q: str = Query(..., min_length=2),
+    q: str = Query(..., min_length=2, max_length=300),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=50),
 ):
@@ -1117,7 +1254,7 @@ async def search_institutions(
 
 @app.get("/api/institution-suggestions")
 async def institution_rank(
-    institution: str | None = Query(default=None, min_length=2),
+    institution: str | None = Query(default=None, min_length=2, max_length=300),
     institution_id: str | None = Query(default=None),
     origin_ids: list[str] = Query(default=[]),
     limit: int = Query(default=10, ge=1, le=20),
@@ -1131,6 +1268,9 @@ async def institution_rank(
     balances topic and citation lanes; a result is shown only after every displayed
     hop has exact publication evidence and passes identity-continuity checks.
     """
+    origin_ids = _validate_ids(origin_ids, RANK_ORIGIN_MAX, "A")
+    if institution_id is not None:
+        institution_id = _validate_id(institution_id, "I")
     loop = asyncio.get_running_loop()
     search_started = loop.time()
     total_deadline = search_started + RANK_TOTAL_TIMEOUT_S
@@ -1777,7 +1917,7 @@ async def institution_rank(
 
 @app.get("/api/authors/{author_id}/works", response_model=list[AuthorWork])
 async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge=1, le=25)):
-    author_id = _short_id(author_id)
+    author_id = _validate_id(author_id, "A")
     verified_work_ids = get_verified_work_ids(author_id)
     if verified_work_ids is None:
         works = await _client.get_author_works(author_id, limit=limit)
@@ -1820,8 +1960,16 @@ async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge
 
 
 @app.delete("/api/cache")
-async def clear_cache():
+async def clear_cache(request: Request):
     """Wipe the server-side caches (neighbor LRU + persisted store + author LRU)."""
+    _require_same_origin(request)
+    admin_token = os.environ.get("CACHE_ADMIN_TOKEN", "")
+    authorization = request.headers.get("authorization", "")
+    scheme, _, supplied = authorization.partition(" ")
+    if not admin_token or scheme.casefold() != "bearer" or not secrets.compare_digest(
+        supplied.encode(), admin_token.encode()
+    ):
+        raise HTTPException(status_code=403, detail="Cache administration requires an admin token.")
     await _cache.clear()
     _client.clear_author_cache()
     return {"cleared": True}
@@ -1833,7 +1981,9 @@ async def get_path(
     to_id: str = Query(..., alias="to"),
     edges: list[str] = Query(default=list(ALL_EDGE_TYPES)),
 ):
-    edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
+    from_id = _validate_id(from_id, "A")
+    to_id = _validate_id(to_id, "A")
+    edge_types = _validate_edges(edges, ALL_EDGE_TYPES)
 
     async def event_stream():
         try:
@@ -1842,16 +1992,16 @@ async def get_path(
             from_name = from_author.get("display_name", from_id)
             to_name = to_author.get("display_name", to_id)
         except Exception as exc:
-            yield f"event: app_error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            yield f"event: app_error\ndata: {json.dumps(_error_payload(exc))}\n\n"
             return
 
-        backend = _make_backend(edge_types)
         try:
+            backend = _make_backend(edge_types)
             async for event in find_path(backend, from_id, from_name, to_id, to_name):
                 event_type = event.get("type", "progress")
                 yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
         except Exception as exc:
-            yield f"event: app_error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            yield f"event: app_error\ndata: {json.dumps(_error_payload(exc))}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -1863,8 +2013,8 @@ async def get_path(
 @app.get("/api/graph/expand")
 async def graph_expand(
     new_id: str = Query(...),
-    origin_ids: str = Query(default=""),   # comma-sep existing origin IDs
-    path_ids: str = Query(default=""),     # comma-sep existing path node IDs from client
+    origin_ids: str = Query(default="", max_length=1600),   # comma-sep existing origin IDs
+    path_ids: str = Query(default="", max_length=32000),     # comma-sep existing path node IDs from client
     edges: list[str] = Query(default=list(ALL_EDGE_TYPES)),
     work_edges: list[str] = Query(default=list(ALL_WORK_EDGE_TYPES)),
     depth: int = Query(default=2, ge=0, le=4),   # neighborhood expansion depth (0 = path only)
@@ -1872,10 +2022,16 @@ async def graph_expand(
 ):
     from backend.graph_expand import _edge_key, expand_graph, stitch_edges
 
-    edge_types = {e for e in edges if e in ALL_EDGE_TYPES} or ALL_EDGE_TYPES
-    work_edge_types = {e for e in work_edges if e in ALL_WORK_EDGE_TYPES} or ALL_WORK_EDGE_TYPES
-    existing_origins = [x.strip() for x in origin_ids.split(",") if x.strip()]
-    existing_path_ids = [x.strip() for x in path_ids.split(",") if x.strip()]
+    new_id = _validate_id(new_id)
+    edge_types = _validate_edges(edges, ALL_EDGE_TYPES)
+    work_edge_types = _validate_edges(work_edges, ALL_WORK_EDGE_TYPES)
+    existing_origins = _validate_ids(
+        [x.strip() for x in origin_ids.split(",") if x.strip()], GRAPH_ORIGIN_MAX
+    )
+    existing_origins = [origin for origin in existing_origins if origin != new_id]
+    existing_path_ids = _validate_ids(
+        [x.strip() for x in path_ids.split(",") if x.strip()], GRAPH_PATH_ID_MAX
+    )
 
     async def event_stream():
         # Fetch the new origin's metadata — a work (paper) or an author.
@@ -1884,7 +2040,7 @@ async def graph_expand(
                 _client.get_work(new_id) if _is_work_id(new_id) else _client.get_author(new_id)
             )
         except Exception as exc:
-            yield f"event: app_error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            yield f"event: app_error\ndata: {json.dumps(_error_payload(exc))}\n\n"
             return
 
         if _is_work_id(new_id):
@@ -1911,7 +2067,11 @@ async def graph_expand(
             }
         yield f"event: node\ndata: {json.dumps(new_node)}\n\n"
 
-        backend = _make_backend(edge_types, work_edge_types)
+        try:
+            backend = _make_backend(edge_types, work_edge_types)
+        except Exception as exc:
+            yield f"event: app_error\ndata: {json.dumps(_error_payload(exc))}\n\n"
+            return
         new_path_node_ids: list[str] = []
         visible_ids: set[str] = {new_id} | set(existing_origins) | set(existing_path_ids)
         all_origins = [new_id] + existing_origins
@@ -1919,10 +2079,16 @@ async def graph_expand(
 
         def _path_events(path_results):
             """SSE frames for gathered path results: nodes, edges, then one path event per pair."""
-            for result in path_results:
-                if isinstance(result, Exception):
-                    log.warning("Path finding failed: %s", result)
-                    continue
+            for origin_id, result in zip(existing_origins, path_results):
+                if isinstance(result, BaseException):
+                    log.warning("Path finding failed (%s)", type(result).__name__)
+                    result = {
+                        "from_id": new_id, "from_name": new_name,
+                        "to_id": origin_id, "to_name": origin_id,
+                        "found": False, "hops": None, "steps": [], "nodes": [], "edges": [],
+                        "search_complete": False, "reason": "error",
+                        "error": _error_payload(result),
+                    }
                 pair_key = "||".join(sorted([result["from_id"], result["to_id"]]))
                 for n in result["nodes"]:
                     if n["type"] == "path":
@@ -1937,6 +2103,11 @@ async def graph_expand(
                     k: result[k]
                     for k in ("from_id", "from_name", "to_id", "to_name", "hops", "found", "steps")
                 }
+                path_event.update(
+                    search_complete=result.get("search_complete", True),
+                    reason=result.get("reason"),
+                    error=result.get("error"),
+                )
                 yield f"event: path\ndata: {json.dumps(path_event)}\n\n"
 
         # Overlap the two expensive phases: the path BFS runs as a background
@@ -2017,13 +2188,14 @@ async def graph_expand(
                 path_task = None
                 for frame in _path_events(path_results):
                     yield frame
-            yield f"event: app_error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            yield f"event: app_error\ndata: {json.dumps(_error_payload(exc))}\n\n"
             return
         finally:
             # Client disconnect closes this generator mid-stream; don't leave
             # the path gather running as an orphan.
             if path_task is not None:
                 path_task.cancel()
+                await asyncio.gather(path_task, return_exceptions=True)
 
         yield "event: done\ndata: {}\n\n"
 

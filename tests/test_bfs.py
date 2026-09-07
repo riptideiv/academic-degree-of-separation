@@ -13,6 +13,19 @@ class MockBackend(GraphBackend):
         return self._graph.get(author_id, [])
 
 
+class RecordingBackend(MockBackend):
+    def __init__(self, graph, incomplete_ids=()):
+        super().__init__(graph)
+        self.calls = []
+        self.incomplete_ids = set(incomplete_ids)
+
+    async def get_neighbors_batch(self, author_ids, cached_only=False):
+        self.calls.append(set(author_ids))
+        batch = await super().get_neighbors_batch(author_ids, cached_only=cached_only)
+        batch.complete_ids.difference_update(self.incomplete_ids)
+        return batch
+
+
 def edge(to_id, to_name, conn_type="coauthor", label="Test Paper", direction=None):
     return Connection(
         target_author_id=to_id,
@@ -80,6 +93,61 @@ async def test_no_path_found():
     result = events[-1]
     assert result["found"] is False
     assert "reason" in result
+
+
+@pytest.mark.parametrize("empty_side", ["forward", "backward"])
+async def test_search_continues_from_nonempty_side_after_partial_ring(empty_side):
+    if empty_side == "forward":
+        graph = {
+            "A1": [],
+            "A3": [edge("A2", "Bob")],
+            "A2": [edge("A1", "Alice")],
+        }
+        incomplete_ids = {"A1"}
+    else:
+        graph = {
+            "A1": [edge("A2", "Bob"), edge("A9", "Other")],
+            "A3": [],
+            "A2": [edge("A3", "Carol")],
+        }
+        incomplete_ids = {"A3"}
+    backend = RecordingBackend(graph, incomplete_ids=incomplete_ids)
+
+    events = await collect(find_path(backend, "A1", "Alice", "A3", "Carol", max_depth=3))
+
+    assert events[-1]["found"] is True
+    assert events[-1]["hops"] == 2
+    assert events[-1]["search_complete"] is False
+    assert [s["author_id"] for s in events[-1]["path"]] == ["A1", "A2", "A3"]
+    assert len(backend.calls) == 3
+    assert all(backend.calls)
+
+
+async def test_exhausted_frontiers_stop_without_empty_batch_fetches():
+    backend = RecordingBackend({})
+
+    events = await collect(find_path(backend, "A1", "Alice", "A2", "Bob", max_depth=6))
+
+    assert events[-1]["found"] is False
+    assert backend.calls == [{"A1"}, {"A2"}]
+
+
+@pytest.mark.parametrize("max_depth", [0, 1, 2, 3])
+async def test_search_keeps_total_expansion_and_path_hop_bounds(max_depth):
+    graph = {
+        "A1": [edge("A2", "Bob")],
+        "A2": [edge("A1", "Alice"), edge("A3", "Carol")],
+        "A3": [edge("A2", "Bob"), edge("A4", "Dave")],
+        "A4": [edge("A3", "Carol")],
+    }
+    backend = RecordingBackend(graph)
+
+    events = await collect(find_path(backend, "A1", "Alice", "A4", "Dave", max_depth=max_depth))
+
+    assert len(backend.calls) <= max_depth
+    assert events[-1]["found"] is (max_depth >= 3)
+    if events[-1]["found"]:
+        assert events[-1]["hops"] <= max_depth
 
 
 async def test_no_path_from_incomplete_ring_is_not_reported_complete():

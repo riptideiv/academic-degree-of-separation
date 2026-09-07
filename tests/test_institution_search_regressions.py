@@ -151,7 +151,7 @@ def _ids(records: list[dict]) -> list[str]:
 
 def test_balanced_pool_keeps_low_citation_topical_author_beyond_top_fifty():
     origin = _author(
-        "A-ORIGIN",
+        "A900000",
         "Origin Philosopher",
         topic=PHILOSOPHY,
         institution=False,
@@ -186,7 +186,7 @@ def test_balanced_pool_keeps_low_citation_topical_author_beyond_top_fifty():
 
 async def test_two_hop_path_requires_exact_work_evidence_on_both_legs():
     origin = _author(
-        "A-ORIGIN", "Origin Philosopher", topic=PHILOSOPHY, institution=False
+        "A900000", "Origin Philosopher", topic=PHILOSOPHY, institution=False
     )
     candidate = _author("A-CANDIDATE", "Local Philosopher", topic=PHILOSOPHY)
     candidate_bridge = _edge(
@@ -214,25 +214,25 @@ async def test_two_hop_path_requires_exact_work_evidence_on_both_legs():
         client.get_coauthor_links = AsyncMock(side_effect=links)
 
         paths, errors, complete = await _short_coauthor_paths(
-            [candidate], ["A-ORIGIN"], max_depth=2
+            [candidate], ["A900000"], max_depth=2
         )
 
     assert paths == {}
     assert errors == 0
     assert complete is True
     assert any(
-        {"A-ORIGIN", "A-BRIDGE"} <= (set(call.args[0]) | set(call.args[1]))
+        {"A900000", "A-BRIDGE"} <= (set(call.args[0]) | set(call.args[1]))
         for call in client.get_coauthor_links.await_args_list
     )
 
 
 async def test_two_hop_path_rejects_merged_cross_domain_intermediary():
     origin = _author(
-        "A-ORIGIN", "Origin Philosopher", topic=PHILOSOPHY, institution=False
+        "A900000", "Origin Philosopher", topic=PHILOSOPHY, institution=False
     )
     candidate = _author("A-CANDIDATE", "Local Geneticist", topic=GENETICS)
     philosophy_leg = _edge(
-        "A-ORIGIN",
+        "A900000",
         "Origin Philosopher",
         "A-MERGED",
         "David Manley",
@@ -250,11 +250,11 @@ async def test_two_hop_path_rejects_merged_cross_domain_intermediary():
 
     async def links(left_ids, right_ids):
         requested = set(left_ids) | set(right_ids)
-        if {"A-ORIGIN", "A-CANDIDATE"} <= requested:
+        if {"A900000", "A-CANDIDATE"} <= requested:
             return []
         if {"A-MERGED", "A-CANDIDATE"} <= requested:
             return [genetics_leg]
-        if {"A-ORIGIN", "A-MERGED"} <= requested:
+        if {"A900000", "A-MERGED"} <= requested:
             return [philosophy_leg]
         return []
 
@@ -266,7 +266,7 @@ async def test_two_hop_path_rejects_merged_cross_domain_intermediary():
         client.get_coauthor_links = AsyncMock(side_effect=links)
 
         paths, errors, complete = await _short_coauthor_paths(
-            [candidate], ["A-ORIGIN"], max_depth=2
+            [candidate], ["A900000"], max_depth=2
         )
 
     assert paths == {}
@@ -277,13 +277,13 @@ async def test_two_hop_path_rejects_merged_cross_domain_intermediary():
 async def test_deeper_bfs_proposal_also_rejects_merged_cross_domain_intermediary():
     """The slow fallback may propose IDs, but exact works still decide identity."""
     origin = _author(
-        "A-ORIGIN", "Origin Philosopher", topic=PHILOSOPHY, institution=False
+        "A900000", "Origin Philosopher", topic=PHILOSOPHY, institution=False
     )
     candidate = _author("A-CANDIDATE", "Local Geneticist", topic=GENETICS)
     philosophy_leg = _edge(
         "A-MERGED",
         "David Manley",
-        "A-ORIGIN",
+        "A900000",
         "Origin Philosopher",
         "W-PHILOSOPHY",
         topic=PHILOSOPHY,
@@ -310,7 +310,7 @@ async def test_deeper_bfs_proposal_also_rejects_merged_cross_domain_intermediary
             {
                 "from_id": "A-MERGED",
                 "from_name": "David Manley",
-                "to_id": "A-ORIGIN",
+                "to_id": "A900000",
                 "to_name": "Origin Philosopher",
                 "type": "coauthor",
             },
@@ -332,13 +332,13 @@ async def test_deeper_bfs_proposal_also_rejects_merged_cross_domain_intermediary
 
 async def test_reviewed_identity_scope_filters_exact_edges_to_reviewed_works():
     origin = _author(
-        "A-ORIGIN", "Origin Philosopher", topic=PHILOSOPHY, institution=False
+        "A900000", "Origin Philosopher", topic=PHILOSOPHY, institution=False
     )
     candidate = _author("A-REVIEWED", "Reviewed Philosopher", topic=PHILOSOPHY)
     bogus = _edge(
         "A-REVIEWED",
         "Reviewed Philosopher",
-        "A-ORIGIN",
+        "A900000",
         "Origin Philosopher",
         "W-BOGUS",
         topic=PHILOSOPHY,
@@ -347,7 +347,7 @@ async def test_reviewed_identity_scope_filters_exact_edges_to_reviewed_works():
     reviewed = _edge(
         "A-REVIEWED",
         "Reviewed Philosopher",
-        "A-ORIGIN",
+        "A900000",
         "Origin Philosopher",
         "W-REVIEWED",
         topic=PHILOSOPHY,
@@ -367,7 +367,7 @@ async def test_reviewed_identity_scope_filters_exact_edges_to_reviewed_works():
         client.get_coauthor_links = AsyncMock(return_value=[bogus, reviewed])
 
         paths, errors, complete = await _short_coauthor_paths(
-            [candidate], ["A-ORIGIN"], max_depth=2
+            [candidate], ["A900000"], max_depth=2
         )
 
     assert errors == 0
@@ -381,7 +381,7 @@ async def test_reviewed_identity_scope_filters_exact_edges_to_reviewed_works():
 
 def test_deeper_shortlist_is_bounded_and_not_citation_ranked():
     origin = _author(
-        "A-ORIGIN", "Origin Philosopher", topic=PHILOSOPHY, institution=False
+        "A900000", "Origin Philosopher", topic=PHILOSOPHY, institution=False
     )
     candidates = [
         _author(f"A-CITED-{index:03d}", citations=1_000_000 - index)
@@ -405,7 +405,7 @@ def test_deeper_shortlist_is_bounded_and_not_citation_ranked():
 
 async def test_two_short_results_do_not_skip_bounded_deeper_search():
     origin = _author(
-        "A-ORIGIN", "Origin Philosopher", topic=PHILOSOPHY, institution=False
+        "A900000", "Origin Philosopher", topic=PHILOSOPHY, institution=False
     )
     candidates = [
         _author(f"A-CANDIDATE-{index}", topic=PHILOSOPHY, citations=100 - index)
@@ -418,12 +418,12 @@ async def test_two_short_results_do_not_skip_bounded_deeper_search():
             "steps": [_verified_step(_edge(
                 f"A-CANDIDATE-{index}",
                 f"A-CANDIDATE-{index}",
-                "A-ORIGIN",
+                "A900000",
                 "Origin Philosopher",
                 f"W-SHORT-{index}",
                 topic=PHILOSOPHY,
             ))],
-            "closest_origin_id": "A-ORIGIN",
+            "closest_origin_id": "A900000",
             "reachable_origin_count": 1,
             "path_verified": True,
             "evidence_quality": 1.0,
@@ -454,7 +454,7 @@ async def test_two_short_results_do_not_skip_bounded_deeper_search():
                 params={
                     "institution_id": "I1",
                     "institution": "Example University",
-                    "origin_ids": "A-ORIGIN",
+                    "origin_ids": "A900000",
                     "limit": 10,
                 },
             )
@@ -475,15 +475,15 @@ async def test_two_short_results_do_not_skip_bounded_deeper_search():
 
 async def test_failed_origin_query_never_claims_complete_coverage():
     origin_one = _author(
-        "A-ORIGIN-1", "Origin One", topic=PHILOSOPHY, institution=False
+        "A900001", "Origin One", topic=PHILOSOPHY, institution=False
     )
     origin_two = _author(
-        "A-ORIGIN-2", "Origin Two", topic=PHILOSOPHY, institution=False
+        "A900002", "Origin Two", topic=PHILOSOPHY, institution=False
     )
     candidate = _author("A-CANDIDATE", "Local Philosopher", topic=PHILOSOPHY)
 
     async def summary(author_id, verified_work_ids=None):
-        if author_id == "A-ORIGIN-2":
+        if author_id == "A900002":
             raise RuntimeError("one origin query failed")
         return {}
 
@@ -493,7 +493,7 @@ async def test_failed_origin_query_never_claims_complete_coverage():
         client.get_coauthor_links = AsyncMock(return_value=[])
 
         paths, errors, complete = await _short_coauthor_paths(
-            [candidate], ["A-ORIGIN-1", "A-ORIGIN-2"], max_depth=2
+            [candidate], ["A900001", "A900002"], max_depth=2
         )
 
     assert paths == {}
@@ -520,8 +520,8 @@ async def test_failed_origin_query_never_claims_complete_coverage():
                 params=[
                     ("institution_id", "I1"),
                     ("institution", "Example University"),
-                    ("origin_ids", "A-ORIGIN-1"),
-                    ("origin_ids", "A-ORIGIN-2"),
+                    ("origin_ids", "A900001"),
+                    ("origin_ids", "A900002"),
                 ],
             )
 
@@ -540,13 +540,13 @@ async def test_failed_origin_query_never_claims_complete_coverage():
 
 async def test_origin_summary_coauthor_cannot_self_validate_a_merged_identity():
     origin = _author(
-        "A-ORIGIN", "Alex Smith", topic=PHILOSOPHY, institution=False
+        "A900000", "Alex Smith", topic=PHILOSOPHY, institution=False
     )
     candidate = _author("A-CANDIDATE", "Genetics Collaborator", topic=GENETICS)
     cross_domain_edge = _edge(
         "A-CANDIDATE",
         "Genetics Collaborator",
-        "A-ORIGIN",
+        "A900000",
         "Alex Smith",
         "W-GENETICS",
         topic=GENETICS,
@@ -562,7 +562,7 @@ async def test_origin_summary_coauthor_cannot_self_validate_a_merged_identity():
         client.get_coauthor_links = AsyncMock(return_value=[cross_domain_edge])
 
         paths, errors, complete = await _short_coauthor_paths(
-            [candidate], ["A-ORIGIN"], max_depth=1
+            [candidate], ["A900000"], max_depth=1
         )
 
     assert paths == {}
@@ -572,7 +572,7 @@ async def test_origin_summary_coauthor_cannot_self_validate_a_merged_identity():
 
 async def test_short_scan_exception_reports_zero_checked_candidates():
     origin = _author(
-        "A-ORIGIN", "Origin Philosopher", topic=PHILOSOPHY, institution=False
+        "A900000", "Origin Philosopher", topic=PHILOSOPHY, institution=False
     )
     candidate = _author("A-CANDIDATE", "Local Philosopher", topic=PHILOSOPHY)
 
@@ -593,7 +593,7 @@ async def test_short_scan_exception_reports_zero_checked_candidates():
                 params={
                     "institution_id": "I1",
                     "institution": "Example University",
-                    "origin_ids": "A-ORIGIN",
+                    "origin_ids": "A900000",
                     "max_depth": 2,
                 },
             )
@@ -628,7 +628,7 @@ async def test_total_budget_also_bounds_candidate_discovery():
                 params={
                     "institution_id": "I1",
                     "institution": "Example University",
-                    "origin_ids": "A-ORIGIN",
+                    "origin_ids": "A900000",
                 },
             )
         elapsed = asyncio.get_running_loop().time() - started
@@ -640,7 +640,7 @@ async def test_total_budget_also_bounds_candidate_discovery():
 
 async def test_incomplete_deep_ring_is_not_counted_as_completed_coverage():
     origin = _author(
-        "A-ORIGIN", "Origin Philosopher", topic=PHILOSOPHY, institution=False
+        "A900000", "Origin Philosopher", topic=PHILOSOPHY, institution=False
     )
     candidate = _author("A-CANDIDATE", "Local Philosopher", topic=PHILOSOPHY)
 
@@ -670,7 +670,7 @@ async def test_incomplete_deep_ring_is_not_counted_as_completed_coverage():
                 params={
                     "institution_id": "I1",
                     "institution": "Example University",
-                    "origin_ids": "A-ORIGIN",
+                    "origin_ids": "A900000",
                 },
             )
 

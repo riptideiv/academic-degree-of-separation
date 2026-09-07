@@ -4,8 +4,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Researcher Degree of Separation</title>
-  <link rel="stylesheet" href="style.css?v=20260826-2">
+  <title>Six Degrees of Academia</title>
+  <meta name="description" content="Explore connections between researchers through co-authorship, citations, and institutions. Save the paths you discover.">
+  <link rel="stylesheet" href="style.css?v=20260907-1">
   <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
   <!-- fCoSE: spectral + spring layout for cleaner node separation; it also tiles
        disconnected neighborhoods (the 2+ researcher case) instead of overlapping them. -->
@@ -24,12 +25,12 @@
       <summary>Researchers</summary>
       <div class="side-card-body">
         <div id="search-wrapper">
-          <input type="text" id="search-input" placeholder="Add a researcher…" autocomplete="off">
+          <input type="text" id="search-input" aria-label="Researcher name" placeholder="Add a researcher…" autocomplete="off">
           <button class="smooth-button" id="search-btn" type="button">Search</button>
         </div>
 
         <div id="work-search-wrapper">
-          <input type="text" id="work-search-input" placeholder="Add a work…" autocomplete="off">
+          <input type="text" id="work-search-input" aria-label="Work title" placeholder="Add a work…" autocomplete="off">
           <button class="smooth-button" id="work-search-btn" type="button">Search</button>
         </div>
 
@@ -97,13 +98,14 @@
       <summary>Advanced settings</summary>
       <div class="side-card-body">
         <div class="section-label">OpenAlex API key</div>
-        <p class="settings-help">The app normally supplies this automatically. If OpenAlex access fails, you can use your own free key.</p>
+        <p class="settings-help">The app can supply a shared key. Your own key applies only to your browser session.</p>
         <div id="openalex-key-row">
-          <input type="password" id="openalex-key-input" placeholder="Paste API key…" autocomplete="off" aria-describedby="openalex-key-help">
+          <input type="password" id="openalex-key-input" aria-label="Personal OpenAlex API key" placeholder="Paste API key…" autocomplete="off" aria-describedby="openalex-key-help">
           <button class="smooth-button" id="openalex-key-save" type="button">Save</button>
         </div>
         <div id="openalex-key-help" class="settings-help">Create a free OpenAlex account, then copy your key from <a href="https://openalex.org/settings/api" target="_blank" rel="noopener">OpenAlex API settings ↗</a>.</div>
         <div id="openalex-key-status" aria-live="polite"></div>
+        <button class="smooth-button" id="openalex-key-clear" type="button">Remove my key</button>
       </div>
     </details>
 
@@ -114,12 +116,18 @@
     </div>
 
     <div id="canvas-actions">
+      <div class="graph-action-row">
+        <button id="fit-graph" type="button" disabled>Fit graph</button>
+        <button id="export-image" type="button" disabled>Save image</button>
+      </div>
+      <button id="export-paths" type="button" disabled>Download connection report</button>
+      <div id="export-status" class="settings-help" role="status"></div>
       <button id="restore-settings" title="Re-apply the settings from the last completed search">Restore
         settings</button>
       <button id="restore-default-layout" title="Reset spacing and link-length sliders to defaults">Default
         layout</button>
       <hr style="width: 70%; margin: 10px auto;">
-      <button id="clear-canvas" title="Clear all researchers and reset caches">Clear canvas</button>
+      <button id="clear-canvas" title="Clear this canvas and its saved graph">Clear canvas</button>
     </div>
   </div>
 
@@ -128,7 +136,8 @@
   <div id="graph-area">
     <button id="menu-toggle" type="button" aria-label="Toggle menu">☰</button>
     <div id="progress-overlay" class="hidden">
-      <span id="progress-text">Loading…</span>
+      <span id="progress-text" role="status" aria-live="polite">Loading…</span>
+      <button id="stop-search" type="button" class="hidden">Stop search</button>
     </div>
     <div id="empty-state" class="hidden">
       <!-- Decorative sample network drawn behind the prompt. Blurred + white-washed
@@ -190,11 +199,11 @@
         <h1>Researcher Degrees of Separation</h1>
         <p>How many hops of co-authorship, citation, or shared institution separate any two researchers?
           Search for two names and find out.</p>
-        <button id="empty-example" type="button">Try an example: Geoffrey Hinton ↔ Noam Chomsky</button>
+        <button id="empty-example" type="button">Try an example: Geoffrey Hinton ↔ Yoshua Bengio</button>
       </div>
     </div>
     <div id="institution-explorer-shell">
-      <details id="institution-explorer" class="graph-window" open>
+      <details id="institution-explorer" class="graph-window">
         <summary class="graph-window-title">
           <span>Institution Explorer</span>
           <button type="button" class="info-button" aria-label="About Institution Explorer" aria-describedby="institution-info-tooltip">i</button>
@@ -232,7 +241,7 @@
       <summary class="legend-title">Legend</summary>
       <div class="legend-row"><span class="legend-node" style="background:#f5821e"></span> Searched researcher</div>
       <div class="legend-row"><span class="legend-node" style="background:#5badd9; width:9px; height:9px;"></span> On a
-        shortest path</div>
+        connecting path</div>
       <div class="legend-row"><span class="legend-node legend-diamond"></span> Work</div>
       <div class="legend-row"><span class="legend-node" style="background:#9a9a9a"></span> Neighborhood · bigger &amp;
         darker = more works</div>
@@ -246,12 +255,12 @@
 
   <div id="search-modal" class="hidden">
     <div id="search-backdrop"></div>
-    <div id="search-dialog">
+    <div id="search-dialog" role="dialog" aria-modal="true" aria-labelledby="search-title" tabindex="-1">
       <div id="search-header">
         <span id="search-title">Search results</span>
         <button id="search-close" type="button" aria-label="Close">×</button>
       </div>
-      <ul id="search-results-list"></ul>
+      <ul id="search-results-list" aria-live="polite"></ul>
       <div id="search-pagination"></div>
     </div>
   </div>
@@ -261,7 +270,8 @@
     <button id="view-menu" type="button">Menu</button>
   </div>
 
-  <script src="app.js?v=20260826-2"></script>
+  <script src="research_export.js?v=20260907-1"></script>
+  <script src="app.js?v=20260907-1"></script>
 </body>
 
 </html>

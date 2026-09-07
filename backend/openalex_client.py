@@ -1,7 +1,11 @@
 import asyncio
 import json
+import logging
+import math
 import os
+import re
 from collections import OrderedDict
+from contextvars import ContextVar
 
 import httpx
 
@@ -10,6 +14,32 @@ from backend.models import AuthorResult, WorkResult
 API_BASE = "https://api.openalex.org"
 _FILTER_CHUNK = 50  # max IDs per pipe-separated filter to stay within URL limits
 _COAUTHOR_LINK_PAGE_MAX = 3
+# Bound by the ASGI request middleware; copied into concurrent search tasks.
+# None preserves the deployment key while personal keys stay request-local.
+request_api_key: ContextVar[str | None] = ContextVar("openalex_request_api_key", default=None)
+
+
+class _OpenAlexKeyLogFilter(logging.Filter):
+    """Redact credentials from httpx's normal request log without hiding URLs."""
+
+    redacts_openalex_keys = True
+    _urls = re.compile(r"https://api\.openalex\.org(?::443)?/[^\s\"'<>]*")
+    _keys = re.compile(r"([?&]api_key=)[^&#]*")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = self._urls.sub(
+            lambda match: self._keys.sub(r"\1[redacted]", match.group()), message
+        )
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
+_httpx_logger = logging.getLogger("httpx")
+if not any(getattr(item, "redacts_openalex_keys", False) for item in _httpx_logger.filters):
+    _httpx_logger.addFilter(_OpenAlexKeyLogFilter())
 
 
 def _short_id(openalex_url: str) -> str:
@@ -199,7 +229,17 @@ class OpenAlexClient:
 
     @property
     def has_api_key(self) -> bool:
-        return bool(self._api_key)
+        return bool(self._effective_api_key())
+
+    @property
+    def key_source(self) -> str | None:
+        if request_api_key.get() is not None:
+            return "personal"
+        return "server" if self._api_key else None
+
+    def _effective_api_key(self) -> str:
+        personal_key = request_api_key.get()
+        return self._api_key if personal_key is None else personal_key
 
     def set_api_key(self, api_key: str) -> None:
         self._api_key = api_key.strip()
@@ -237,8 +277,9 @@ class OpenAlexClient:
 
     async def _get(self, url: str, params: dict, max_attempts: int = 5) -> dict:
         params = dict(params)
-        if self._api_key:
-            params["api_key"] = self._api_key
+        api_key = self._effective_api_key()
+        if api_key:
+            params["api_key"] = api_key
         if self._mailto:
             params.setdefault("mailto", self._mailto)
         client = await self._http_client()
@@ -250,7 +291,14 @@ class OpenAlexClient:
                     resp.raise_for_status()
                 if attempt < max_attempts - 1:
                     retry_after = resp.headers.get("Retry-After")
-                    delay = min(float(retry_after), 5.0) if retry_after else min(2**attempt, 5.0)
+                    delay = min(2**attempt, 5.0)
+                    if retry_after:
+                        try:
+                            parsed = float(retry_after)
+                            if math.isfinite(parsed) and parsed >= 0:
+                                delay = min(parsed, 5.0)
+                        except ValueError:
+                            pass
                     await asyncio.sleep(delay)
                 continue
             resp.raise_for_status()

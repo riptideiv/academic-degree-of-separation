@@ -249,6 +249,53 @@ async def test_retry_exhaustion_raises(api_key_file):
             await client.search_authors("test")
 
 
+@respx.mock
+@pytest.mark.parametrize("retry_after", ["not-a-number", "-2", "NaN", "Wed, 21 Oct 2015 07:28:00 GMT"])
+async def test_malformed_retry_after_keeps_bounded_retry_policy(api_key_file, retry_after):
+    from unittest.mock import AsyncMock, patch
+
+    route = respx.get("https://api.openalex.org/authors/A1").mock(side_effect=[
+        httpx.Response(429, headers={"Retry-After": retry_after}),
+        httpx.Response(200, json={"id": "https://openalex.org/A1", "display_name": "Alice"}),
+    ])
+    client = OpenAlexClient()
+    with patch("backend.openalex_client.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        author = await client.get_author("A1")
+    assert author["display_name"] == "Alice"
+    assert route.call_count == 2
+    sleep.assert_awaited_once_with(1)
+    await client.aclose()
+
+
+async def test_httpx_info_logs_redact_only_openalex_query_keys(monkeypatch, caplog):
+    import logging
+    from urllib.parse import quote_plus
+
+    api_key = "private/key+with space"
+    monkeypatch.setenv("OPENALEX_KEY", api_key)
+    client = OpenAlexClient()
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"id": "https://openalex.org/A1"})
+    ))
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        await client.get_author("A1")
+        logging.getLogger("httpx").info(
+            "Unrelated request %s", "https://example.org/?api_key=external-key",
+            extra={"request_marker": "keep-me"},
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    upstream = next(message for message in messages if "api.openalex.org" in message)
+    assert "api_key=[redacted]" in upstream
+    assert api_key not in upstream
+    assert quote_plus(api_key) not in upstream
+    assert '"HTTP/1.1 200 OK"' in upstream
+    unrelated = next(record for record in caplog.records if getattr(record, "request_marker", None))
+    assert unrelated.getMessage() == "Unrelated request https://example.org/?api_key=external-key"
+    assert unrelated.request_marker == "keep-me"
+    assert unrelated.name == "httpx" and unrelated.levelno == logging.INFO
+    await client.aclose()
+
+
 def test_chunks_helper():
     result = list(_chunks([1, 2, 3, 4, 5], 2))
     assert result == [[1, 2], [3, 4], [5]]

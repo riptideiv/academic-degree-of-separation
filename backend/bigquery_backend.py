@@ -51,7 +51,7 @@ class BigQueryBackend(GraphBackend):
                 target_id = row["target_id"]
                 if source_id not in by_source:
                     continue
-                if target_id not in seen[source_id] and target_id not in {*author_ids}:
+                if target_id != source_id and target_id not in seen[source_id]:
                     seen[source_id].add(target_id)
                     by_source[source_id].append(Connection(
                         target_author_id=target_id,
@@ -103,6 +103,7 @@ class BigQueryBackend(GraphBackend):
         WITH author_works AS (
             SELECT DISTINCT
                 REGEXP_EXTRACT(auth.author.id, r'/([^/]+)$') AS source_id,
+                auth.author.id AS source_author_id,
                 w.id AS work_id,
                 COALESCE(w.title, 'Untitled') AS title
             FROM `{_DATASET}.works` w,
@@ -121,7 +122,7 @@ class BigQueryBackend(GraphBackend):
              UNNEST(citing.referenced_works) AS ref_id,
              UNNEST(citing.authorships) AS auth
         JOIN author_works aw ON ref_id = aw.work_id
-        WHERE auth.author.id NOT IN UNNEST(@author_ids)
+        WHERE auth.author.id != aw.source_author_id
           AND citing.publication_year >= 2010
         LIMIT 1000
         """
@@ -134,6 +135,7 @@ class BigQueryBackend(GraphBackend):
         WITH frontier_insts AS (
             SELECT DISTINCT
                 REGEXP_EXTRACT(a.id, r'/([^/]+)$') AS source_id,
+                a.id AS source_author_id,
                 inst.id AS inst_id,
                 inst.display_name AS inst_name
             FROM `{_DATASET}.authors` a,
@@ -149,7 +151,7 @@ class BigQueryBackend(GraphBackend):
         FROM `{_DATASET}.authors` a,
              UNNEST(a.last_known_institutions) AS inst
         JOIN frontier_insts fi ON inst.id = fi.inst_id
-        WHERE a.id NOT IN UNNEST(@author_ids)
+        WHERE a.id != fi.source_author_id
           AND a.works_count > 5
         LIMIT 1000
         """

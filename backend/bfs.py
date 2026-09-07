@@ -41,7 +41,11 @@ async def find_path(
         if not forward_frontier and not backward_frontier:
             break
 
-        if len(forward_frontier) <= len(backward_frontier):
+        # Bounded/asymmetric rings can exhaust one side while the other still
+        # has evidence to explore. Never spend a depth step on an empty batch.
+        if forward_frontier and (
+            not backward_frontier or len(forward_frontier) <= len(backward_frontier)
+        ):
             direction = "forward"
             frontier = forward_frontier
             visited = forward_parents
