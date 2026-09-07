@@ -375,6 +375,8 @@
     pageCache: new Map(),    // page number -> PaginatedAuthors/PaginatedWorks response
     topWorksCache: new Map(), // author id -> AuthorWork[] (author-only "top papers" panel)
     currentPage: 1,
+    requestId: 0,
+    pendingController: null,
   };
 
   searchBtn.addEventListener('click', () => runSearch('author', searchInput));
@@ -482,7 +484,10 @@
       if (!r.ok) throw new Error('key failed');
       const data = await r.json();
       if (!data.configured) throw new Error('key missing');
+      const refreshSearch = !!searchSession.pendingController;
+      cancelPageRequest();
       searchSession.pageCache.clear();
+      if (refreshSearch) loadPage(searchSession.currentPage);
       setOpenAlexKeyStatus(showSaved ? 'API key saved' : 'API key active');
     } catch {
       setOpenAlexKeyStatus('Could not save API key');
@@ -578,34 +583,51 @@
   });
 
   // ── Search modal (shared by both author and work search) ──────────────────
-  async function fetchResultsPage(q, page) {
-    const endpoint = searchSession.entityType === 'work'
+  async function fetchResultsPage(q, page, entityType, signal) {
+    const endpoint = entityType === 'work'
       ? 'works'
-      : searchSession.entityType === 'rank-institution'
+      : entityType === 'rank-institution'
         ? 'institutions'
         : 'authors';
-    const r = await fetch(`${API_BASE}/api/${endpoint}?q=${encodeURIComponent(q)}&page=${page}&per_page=20`);
+    const r = await fetch(`${API_BASE}/api/${endpoint}?q=${encodeURIComponent(q)}&page=${page}&per_page=20`, { signal });
     if (!r.ok) throw new Error('search failed');
     return r.json();
   }
 
+  function cancelPageRequest() {
+    // Invalidate before aborting: even a response already being decoded must
+    // not overwrite the next page/query, or repopulate a cleared session cache.
+    searchSession.requestId += 1;
+    searchSession.pendingController?.abort();
+    searchSession.pendingController = null;
+  }
+
   async function loadPage(page) {
+    cancelPageRequest();
+    const requestId = searchSession.requestId;
+    const { query, entityType, pageCache } = searchSession;
     searchSession.currentPage = page;
-    if (searchSession.pageCache.has(page)) {
-      renderResultsList(searchSession.pageCache.get(page));
+    if (pageCache.has(page)) {
+      renderResultsList(pageCache.get(page));
       return;
     }
+    const controller = new AbortController();
+    searchSession.pendingController = controller;
     renderSearchListMessage('Searching…');
     try {
-      const data = await fetchResultsPage(searchSession.query, page);
-      searchSession.pageCache.set(page, data);
+      const data = await fetchResultsPage(query, page, entityType, controller.signal);
+      if (requestId !== searchSession.requestId) return;
+      pageCache.set(page, data);
       if (data.message && !(data.results || []).length) {
         renderSearchListMessage(data.message);
         return;
       }
       renderResultsList(data);
-    } catch {
+    } catch (err) {
+      if (requestId !== searchSession.requestId || err?.name === 'AbortError') return;
       renderSearchListMessage('Search failed. Please try again.');
+    } finally {
+      if (requestId === searchSession.requestId) searchSession.pendingController = null;
     }
   }
 
@@ -1119,6 +1141,7 @@
   }
 
   function closeSearchModal() {
+    cancelPageRequest();
     document.getElementById('search-modal').classList.add('hidden');
   }
 

@@ -1,3 +1,5 @@
+import pytest
+
 from backend.bfs import find_path
 from backend.graph_backend import GraphBackend
 from backend.models import Connection
@@ -140,6 +142,34 @@ async def test_path_propagates_citation_direction():
     first_step = result["path"][0]
     assert first_step["connection_to_next"] == "citation"
     assert first_step["direction"] == "outgoing"
+
+
+@pytest.mark.parametrize(
+    ("backward_direction", "path_direction"),
+    [("incoming", "outgoing"), ("outgoing", "incoming"), ("mutual", "mutual")],
+)
+async def test_backward_path_reverses_citation_direction_without_mutating_rings(
+    backward_direction, path_direction,
+):
+    forward_edge = edge("A2", "Bob", conn_type="citation", direction="outgoing")
+    backward_edge = edge(
+        "A2", "Bob", conn_type="citation", direction=backward_direction,
+    )
+    graph = {
+        # The larger source frontier forces the second expansion from A3.
+        "A1": [forward_edge, edge("A9", "Other")],
+        "A3": [backward_edge],
+    }
+    backend = MockBackend(graph)
+
+    events = await collect(find_path(backend, "A1", "Alice", "A3", "Carol"))
+
+    path = events[-1]["path"]
+    assert [step["author_id"] for step in path] == ["A1", "A2", "A3"]
+    assert path[0]["direction"] == "outgoing"
+    assert path[1]["direction"] == path_direction
+    assert forward_edge.direction == "outgoing"
+    assert backward_edge.direction == backward_direction
 
 
 async def test_interior_meeting_point():

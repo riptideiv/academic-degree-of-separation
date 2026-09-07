@@ -134,22 +134,29 @@ def _reconstruct_path(
 ) -> list[dict]:
     # Forward half: trace from meeting back to source, then reverse
     # forward_parents[node] = (parent, conn) means parent->node via conn
-    forward_steps: list[tuple[str, Connection, str]] = []
+    forward_steps: list[tuple[str, Connection, str, str | None]] = []
     node = meeting_id
     while forward_parents[node] is not None:
         parent_id, conn = forward_parents[node]
-        forward_steps.append((parent_id, conn, node))
+        forward_steps.append((parent_id, conn, node, conn.direction))
         node = parent_id
     forward_steps.reverse()
 
     # Backward half: meeting -> target
     # backward_parents[node] = (parent, conn) means parent->node in backward BFS
     # so real direction is node -> parent -> ... -> target
-    backward_steps: list[tuple[str, Connection, str]] = []
+    backward_steps: list[tuple[str, Connection, str, str | None]] = []
     node = meeting_id
     while backward_parents[node] is not None:
         parent_id, conn = backward_parents[node]
-        backward_steps.append((node, conn, parent_id))
+        # Citation direction is relative to the ring's source. The path walks
+        # this edge in reverse; keep the cached Connection itself unchanged.
+        direction = conn.direction
+        if direction == "incoming":
+            direction = "outgoing"
+        elif direction == "outgoing":
+            direction = "incoming"
+        backward_steps.append((node, conn, parent_id, direction))
         node = parent_id
 
     all_steps = forward_steps + backward_steps
@@ -164,11 +171,11 @@ def _reconstruct_path(
          "connection_to_next": None, "label": None, "direction": None}
     ]
 
-    for from_id, conn, to_id in all_steps:
+    for from_id, conn, to_id, direction in all_steps:
         if path[-1]["author_id"] == from_id:
             path[-1]["connection_to_next"] = conn.connection_type
             path[-1]["label"] = conn.label
-            path[-1]["direction"] = conn.direction
+            path[-1]["direction"] = direction
         path.append({
             "author_id": to_id,
             "author_name": names.get(to_id, to_id),

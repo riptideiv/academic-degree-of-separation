@@ -181,6 +181,9 @@ class SupabaseNeighborStore(NeighborStore):
         self._pool = None
         self._pending: dict[str, list[Connection]] = {}
         self._flush_task: asyncio.Task | None = None
+        self._stop = asyncio.Event()
+        # Keep writes ordered, including deletion of the persisted cache.
+        self._flush_lock = asyncio.Lock()
 
     async def open(self) -> None:
         import asyncpg
@@ -197,6 +200,7 @@ class SupabaseNeighborStore(NeighborStore):
         )
         async with self._pool.acquire() as conn:
             await conn.execute(self._TABLE_DDL)
+        self._stop = asyncio.Event()
         self._flush_task = asyncio.create_task(self._flush_loop())
         log.info("Supabase neighbor store ready (lazy per-id fetch)")
 
@@ -220,47 +224,57 @@ class SupabaseNeighborStore(NeighborStore):
         self._pending.update(entries)
 
     async def _flush_loop(self) -> None:
-        try:
-            while True:
-                await asyncio.sleep(FLUSH_INTERVAL_S)
+        while True:
+            stopping = self._stop.is_set()
+            if not stopping:
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=FLUSH_INTERVAL_S)
+                    stopping = True
+                except asyncio.TimeoutError:
+                    pass
+            try:
                 await self.flush()
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # keep the loop alive across transient DB errors
-            log.exception("Neighbor-cache flush loop error; continuing")
+            except Exception:  # keep the loop alive across transient DB errors
+                log.exception("Neighbor-cache flush loop error; continuing")
+            if stopping:
+                return
 
     async def flush(self) -> None:
-        if not self._pending or self._pool is None:
-            return
-        batch = self._pending
-        self._pending = {}
-        records = [
-            (aid, json.dumps([c.model_dump() for c in conns])) for aid, conns in batch.items()
-        ]
-        try:
-            async with self._pool.acquire() as conn:
-                await conn.executemany(self._UPSERT, records)
-        except Exception:
-            for aid, conns in batch.items():  # requeue for the next tick
-                self._pending.setdefault(aid, conns)
-            log.exception("Failed to flush %d neighbor-cache entries", len(records))
+        async with self._flush_lock:
+            if not self._pending or self._pool is None:
+                return
+            batch = self._pending
+            self._pending = {}
+            try:
+                records = [
+                    (aid, json.dumps([c.model_dump() for c in conns]))
+                    for aid, conns in batch.items()
+                ]
+                async with self._pool.acquire() as conn:
+                    await conn.executemany(self._UPSERT, records)
+            except (Exception, asyncio.CancelledError) as exc:
+                for aid, conns in batch.items():  # preserve newer pending values
+                    self._pending.setdefault(aid, conns)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                log.exception("Failed to flush %d neighbor-cache entries", len(batch))
 
     async def clear(self) -> None:
-        self._pending.clear()
-        if self._pool is not None:
-            async with self._pool.acquire() as conn:
-                await conn.execute("DELETE FROM neighbor_cache_v2")
+        async with self._flush_lock:
+            self._pending.clear()
+            if self._pool is not None:
+                async with self._pool.acquire() as conn:
+                    await conn.execute("DELETE FROM neighbor_cache_v2")
 
     async def close(self) -> None:
         if self._flush_task is not None:
-            self._flush_task.cancel()
-            try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                pass
+            self._stop.set()
+            await self._flush_task  # wait for the in-flight write and final flush
+            self._flush_task = None
         await self.flush()
         if self._pool is not None:
             await self._pool.close()
+            self._pool = None
 
 
 class NeighborCache:

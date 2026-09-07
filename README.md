@@ -70,6 +70,8 @@ pytest -q
 
 The suite mocks all network access (`respx` for HTTP, `AsyncMock`/`ASGITransport` for
 the app), so it's fast and offline.
+When Node.js is available, pytest also runs the dependency-free JavaScript tests
+for search request ordering; otherwise that check is skipped.
 
 ## Project layout
 
