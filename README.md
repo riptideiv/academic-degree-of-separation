@@ -96,9 +96,7 @@ guide outside the iframe; embedded app metadata does not replace the outer page'
 metadata. The two hosts currently retain their own canonicals. If consolidating
 the landing page onto one domain later, align content and redirects deliberately.
 
-The [two-week traffic plan](docs/traffic-plan.md) includes specific audiences,
-owner Search Console setup steps, a demo script, unposted outreach drafts, and
-measurement limits. Publishing a sitemap does not itself submit it to Search
+Publishing a sitemap does not itself submit it to Search
 Console or guarantee indexing. The guide is untracked; existing analytics count
 activity in the interactive app, not guide visits or guide-to-app conversions.
 
