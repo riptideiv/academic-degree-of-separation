@@ -1268,6 +1268,41 @@ async def institution_rank(
     balances topic and citation lanes; a result is shown only after every displayed
     hop has exact publication evidence and passes identity-continuity checks.
     """
+    background_tasks: set[asyncio.Task] = set()
+    try:
+        return await _institution_rank(
+            institution=institution,
+            institution_id=institution_id,
+            origin_ids=origin_ids,
+            limit=limit,
+            candidate_pool=candidate_pool,
+            max_depth=max_depth,
+            diagnostics=diagnostics,
+            background_tasks=background_tasks,
+        )
+    finally:
+        # asyncio.wait does not cancel its children when the request is
+        # cancelled. Own every detached discovery/search task until it exits,
+        # including tasks still running if an earlier search phase fails.
+        for task in background_tasks:
+            if not task.done():
+                task.cancel()
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+
+
+async def _institution_rank(
+    *,
+    institution: str | None,
+    institution_id: str | None,
+    origin_ids: list[str],
+    limit: int,
+    candidate_pool: int,
+    max_depth: int,
+    diagnostics: bool,
+    background_tasks: set[asyncio.Task],
+):
+    """Run the bounded search while the endpoint owns its background tasks."""
     origin_ids = _validate_ids(origin_ids, RANK_ORIGIN_MAX, "A")
     if institution_id is not None:
         institution_id = _validate_id(institution_id, "I")
@@ -1346,6 +1381,7 @@ async def institution_rank(
     citation_task = asyncio.create_task(_client.get_institution_authors(
         inst["id"], limit=fetch_limit, sort="cited_by_count:desc"
     ))
+    background_tasks.add(citation_task)
     try:
         origin_timeout = min(
             RANK_ORIGIN_PROFILE_TIMEOUT_S,
@@ -1420,6 +1456,7 @@ async def institution_rank(
                 limit=RANK_HIERARCHY_FETCH_LIMIT,
             )
         ))
+    background_tasks.update(topic_tasks)
 
     try:
         citation_timeout = min(discovery_remaining(), total_remaining())
@@ -1619,6 +1656,7 @@ async def institution_rank(
             asyncio.create_task(fetch_seed(author_id)): author_id
             for author_id in seed_ids
         }
+        background_tasks.update(seed_tasks)
         seed_timeout = total_remaining()
         if seed_tasks and seed_timeout > 0:
             seed_done, seed_pending = await asyncio.wait(
@@ -1771,6 +1809,7 @@ async def institution_rank(
             asyncio.create_task(rank_candidate_safely(author))
             for author in deeper_shortlist
         ]
+        background_tasks.update(tasks)
         elapsed = asyncio.get_running_loop().time() - search_started
         remaining = max(0.0, RANK_TOTAL_TIMEOUT_S - elapsed)
         if tasks and remaining > 0:

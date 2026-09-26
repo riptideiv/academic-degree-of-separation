@@ -108,6 +108,33 @@ async def test_get_author_works(api_key_file):
 
 
 @respx.mock
+async def test_get_author_works_preserves_coauthor_evidence(api_key_file):
+    work = {
+        "id": "https://openalex.org/W1",
+        "title": "Shared paper",
+        "authorships": [
+            {"author": {"id": "https://openalex.org/A1", "display_name": "Alice"}},
+            {"author": {"id": "https://openalex.org/A2", "display_name": "Bob"}},
+        ],
+    }
+
+    def handler(request):
+        # Honor OpenAlex's projection rather than returning unselected fields.
+        selected = request.url.params["select"].split(",")
+        return httpx.Response(200, json={
+            "results": [{key: value for key, value in work.items() if key in selected}],
+        })
+
+    respx.get("https://api.openalex.org/works").mock(side_effect=handler)
+    client = OpenAlexClient()
+    try:
+        works = await client.get_author_works("A1")
+        assert works[0]["authorships"] == work["authorships"]
+    finally:
+        await client.aclose()
+
+
+@respx.mock
 async def test_search_does_not_retry_on_429(api_key_file):
     call_count = 0
 
@@ -738,6 +765,43 @@ async def test_get_coauthor_summary_verified_scope_counts_only_requested_works(a
     assert first["A2"]["author_count"] == 3
     assert second == first
     assert first.complete is True
+
+
+@respx.mock
+@pytest.mark.parametrize("limit,coauthor_count,complete", [
+    (2, 2, True),
+    (2, 3, False),
+    (500, 201, False),
+])
+async def test_verified_coauthor_summary_reports_limit_truncation(
+    api_key_file, limit, coauthor_count, complete,
+):
+    route = respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json={
+            "results": [{
+                "id": "https://openalex.org/W1",
+                "title": "Reviewed collaboration",
+                "authorships": [
+                    {"author": {
+                        "id": f"https://openalex.org/A{index}",
+                        "display_name": f"Author {index}",
+                    }}
+                    for index in range(coauthor_count + 1)
+                ],
+            }],
+        })
+    )
+    client = OpenAlexClient()
+    try:
+        first = await client.get_coauthor_summary("A0", ["W1"], limit=limit)
+        cached = await client.get_coauthor_summary("A0", ["W1"], limit=limit)
+
+        assert len(first) == min(limit, 200, coauthor_count)
+        assert first.complete is complete
+        assert cached.complete is complete
+        assert route.call_count == 1
+    finally:
+        await client.aclose()
 
 
 @respx.mock

@@ -26,6 +26,14 @@ function harness() {
     openAlexKeyInput: { value: '' },
     openAlexKeyStatus: { textContent: '' },
     document: {
+      createElement(tagName) {
+        return {
+          tagName, attributes: {}, listeners: {}, children: [], innerHTML: '',
+          setAttribute(name, value) { this.attributes[name] = value; },
+          addEventListener(name, callback) { this.listeners[name] = callback; },
+          replaceChildren(...children) { this.innerHTML = ''; this.children = children; },
+        };
+      },
       getElementById(id) {
         if (!elements.has(id)) elements.set(id, {
           textContent: '', classList: { add() {}, remove() {} },
@@ -46,6 +54,7 @@ function harness() {
     },
     renderResultsList: data => rendered.push(data),
     renderSearchListMessage: message => messages.push(message),
+    renderWorksTable: works => `Works: ${works.map(work => work.id).join(', ')}`,
   });
   vm.runInContext([
     section('  const searchSession = {', '\n  searchBtn.addEventListener'),
@@ -53,7 +62,8 @@ function harness() {
     section('  function runSearch(', '\n  // Edge-type checkboxes'),
     section('  async function fetchResultsPage(', '\n  function renderSearchListMessage('),
     section('  function openSearchModal(', '\n  // ── Persistence'),
-    'this.actions = { runSearch, loadPage, closeSearchModal, sendOpenAlexKey }; this.session = searchSession;',
+    section('  function invalidateTopWorksCache(', '\n  function onAddFromModal('),
+    'this.actions = { runSearch, loadPage, closeSearchModal, sendOpenAlexKey, loadTopWorks, renderTopWorks }; this.session = searchSession;',
   ].join('\n'), context);
   return { ...context, requests, rendered, messages };
 }
@@ -211,4 +221,80 @@ test('saving an API key restarts an active search and discards pre-key results',
   assert.deepEqual(h.rendered, [current]);
   assert.equal(h.session.pageCache.get(1), current);
   assert.equal(h.openAlexKeyStatus.textContent, 'API key saved');
+});
+
+test('failed top-paper requests remain retryable and do not become cached empty results', async () => {
+  for (const failure of ['http', 'network', 'malformed']) {
+    const h = harness();
+    const first = h.actions.loadTopWorks('A1');
+    if (failure === 'http') h.requests[0].respond({ message: 'OpenAlex is temporarily unavailable.' }, false);
+    else if (failure === 'network') h.requests[0].reject(new Error('offline'));
+    else h.requests[0].respond({ unexpected: 'object' });
+    await assert.rejects(first);
+    assert.equal(h.session.topWorksCache.size, 0);
+    const retry = h.actions.loadTopWorks('A1');
+    const works = [{ id: 'W1' }];
+    h.requests[1].respond(works);
+    assert.equal(await retry, works);
+    assert.equal(await h.actions.loadTopWorks('A1'), works);
+    assert.equal(h.requests.length, 2);
+  }
+});
+
+test('a successful empty top-paper response is cached', async () => {
+  const h = harness();
+  const pending = h.actions.loadTopWorks('A1');
+  const works = [];
+  h.requests[0].respond(works);
+  assert.equal(await pending, works);
+  assert.equal(await h.actions.loadTopWorks('A1'), works);
+  assert.equal(h.requests.length, 1);
+});
+
+test('changing or removing a personal key clears top papers and rejects late pre-key responses', async () => {
+  for (const key of ['new-key', '']) {
+    const h = harness();
+    h.session.topWorksCache.set('A2', [{ id: 'W-cached' }]);
+    const old = h.actions.loadTopWorks('A1');
+    const saving = h.actions.sendOpenAlexKey(key, true);
+    h.requests[1].respond({ configured: Boolean(key) });
+    await saving;
+    assert.equal(h.session.topWorksCache.size, 0);
+    const current = h.actions.loadTopWorks('A1');
+    const works = [{ id: 'W-current' }];
+    h.requests[2].respond(works);
+    await current;
+    h.requests[0].respond([{ id: 'W-old' }]);
+    await assert.rejects(old, /stale works response/);
+    assert.equal(h.session.topWorksCache.get('A1'), works);
+  }
+});
+
+test('the works panel shows a useful failure and its retry button fetches again', async () => {
+  const h = harness();
+  const panel = h.document.createElement('div');
+  const first = h.actions.renderTopWorks(panel, 'A1', 5, () => true);
+  assert.equal(panel.attributes['aria-busy'], 'true');
+  const message = 'OpenAlex rejected the API key. Update your key in Advanced settings.';
+  h.requests[0].respond({ message }, false);
+  await first;
+  assert.equal(panel.attributes['aria-busy'], 'false');
+  assert.equal(panel.children[0].textContent, message);
+  assert.equal(panel.children[1].tagName, 'button');
+  const retry = panel.children[1].listeners.click();
+  h.requests[1].respond([{ id: 'W1' }, { id: 'W2' }]);
+  await retry;
+  assert.equal(panel.innerHTML, 'Works: W1, W2');
+  assert.equal(panel.attributes['aria-busy'], 'false');
+});
+
+test('a closed works panel ignores late failures', async () => {
+  const h = harness();
+  const panel = h.document.createElement('div');
+  let current = true;
+  const pending = h.actions.renderTopWorks(panel, 'A1', 5, () => current);
+  current = false;
+  h.requests[0].respond({}, false);
+  await pending;
+  assert.equal(panel.children.length, 0);
 });

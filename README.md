@@ -72,7 +72,8 @@ pytest -q
 The suite mocks all network access (`respx` for HTTP, `AsyncMock`/`ASGITransport` for
 the app), so it's fast and offline.
 When Node.js is available, pytest also runs the dependency-free JavaScript tests
-for search request ordering; otherwise that check is skipped.
+for browser interactions, request ordering, graph state, and exports; otherwise
+those checks are skipped.
 GitHub Actions runs the full suite on Python 3.12 and 3.13, plus the JavaScript
 behavior and syntax checks with Node.js 24.
 
@@ -175,6 +176,10 @@ profile links, citation directions, search options, and coverage limitations.
 Exports run locally and do not include API keys. **Clear canvas** clears only this
 browser's graph; it preserves the shared cache for fast future searches. The search
 dialog supports Escape, keyboard focus containment, and focus restoration.
+Researcher results can be expanded with Enter or Space to view their top papers.
+If a paper request fails, its panel offers a retry instead of reporting an empty
+publication list. Searching and exploring still work when browser storage is
+unavailable; saved settings and graphs then last only for the current page.
 
 After expanding each researcher's neighborhood, the backend also adds the real edges
 among the nodes that are already on screen, so the connecting/middle nodes link into
@@ -182,11 +187,13 @@ the network instead of forming isolated chains between the two hubs. This stitch
 reads only the neighbor cache (no extra OpenAlex calls), so edges between nodes whose
 rings were never fetched are simply not drawn.
 
-Author rings now use the `v4` cache namespace: older author rings could omit links
-to authors fetched in the same batch. They are rebuilt on first use rather than
-trusted as complete, so the first search after upgrading can have cold author-cache
-misses. Unaffected work rings retain their `v3` namespace. No durable table or JSON
-file is deleted during this migration. Repeated coauthors are deduplicated before
+Author and work rings use the `v4` cache namespace. Older author rings could omit
+links to authors fetched in the same batch; older work rings could cache missing
+OpenAlex records as empty neighborhoods. Older rings are rebuilt on first use,
+so the first search after upgrading can have cold cache misses. Existing `v4`
+author entries are retained. No durable table or JSON file is deleted during this
+migration. JSON cache saves replace the file atomically, preserving the previous
+complete cache if a write fails. Repeated coauthors are deduplicated before
 constructing connections, retaining the first publication's evidence without extra
 API requests.
 

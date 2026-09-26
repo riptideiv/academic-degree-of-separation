@@ -417,7 +417,7 @@ class OpenAlexClient:
             "filter": f"authorships.author.id:{author_id}",
             "per_page": limit,
             "sort": "cited_by_count:desc",
-            "select": "id,title,cited_by_count,publication_year,doi,referenced_works",
+            "select": "id,title,cited_by_count,publication_year,doi,referenced_works,authorships",
         })
         return data.get("results", [])
 
@@ -687,8 +687,8 @@ class OpenAlexClient:
         representative work edge (the same shape as ``get_coauthor_links``).
         Verified batches fail closed: if every reviewed work is not returned, no
         partial identity ring is exposed or cached. The returned mapping has a
-        ``complete`` attribute; normal group-by results are bounded to 200 groups
-        and report ``False`` when more groups exist.
+        ``complete`` attribute; both grouped and verified results report ``False``
+        when coauthors are omitted by the requested limit or the 200-result cap.
         """
         if limit <= 0:
             return CoauthorSummary({}, complete=True)
@@ -791,6 +791,7 @@ class OpenAlexClient:
                     if "work_id" not in entry:
                         entry.update(edge)
 
+            complete = len(summary) <= capped_limit
             summary = dict(sorted(
                 summary.items(),
                 key=lambda item: (-item[1]["works_count"], item[0]),

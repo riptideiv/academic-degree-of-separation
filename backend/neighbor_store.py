@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 
@@ -130,7 +131,22 @@ class JsonNeighborStore(NeighborStore):
                 serialisable = {
                     aid: [c.model_dump() for c in conns] for aid, conns in snapshot.items()
                 }
-                self._path.write_text(json.dumps(serialisable))
+                # Write beside the destination so replacement stays atomic. A
+                # failed write must leave the last complete cache available.
+                temporary_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", encoding="utf-8", dir=self._path.parent,
+                        prefix=f".{self._path.name}.", suffix=".tmp", delete=False,
+                    ) as temporary:
+                        temporary_path = Path(temporary.name)
+                        json.dump(serialisable, temporary)
+                        temporary.flush()
+                        os.fsync(temporary.fileno())
+                    os.replace(temporary_path, self._path)
+                finally:
+                    if temporary_path is not None:
+                        temporary_path.unlink(missing_ok=True)
 
             try:
                 await asyncio.to_thread(_write)

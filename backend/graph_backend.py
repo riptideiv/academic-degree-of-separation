@@ -243,12 +243,13 @@ class OpenAlexBackend(GraphBackend):
         if _is_work_id(id_):
             node_kind = "work"
             active = self._work_edge_types
-            schema = "v3"
+            # v3 cached omitted work records as complete empty rings.
+            schema = "v4"
         else:
             node_kind = "author"
             active = self._edge_types
             # v3 author rings omitted neighbors fetched in the same batch.
-            # Rebuild those rings; work rings were unaffected and remain warm.
+            # Rebuild those rings while retaining current author entries.
             schema = "v4"
         edge_scope = ",".join(sorted(active)) or "none"
         return f"{schema}:{node_kind}:{edge_scope}:{id_}"
@@ -797,10 +798,13 @@ class OpenAlexBackend(GraphBackend):
 
         works = await self._client.get_works_batch(work_ids)
         self._require_untruncated_work_evidence(works, "work-neighbor query")
-        complete_ids = (
-            set(work_ids) if bool(getattr(works, "complete", True)) else set()
-        )
         meta = {_short_id(w["id"]): w for w in works}
+        # An ID filter may return fewer records than requested. An omitted
+        # record is missing evidence, not an exhaustive empty authorship ring.
+        complete_ids = (
+            set(work_ids) & set(meta)
+            if bool(getattr(works, "complete", True)) else set()
+        )
 
         if "authorship" in et:
             for wid in work_ids:

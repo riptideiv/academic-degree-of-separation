@@ -701,7 +701,11 @@ body {
 #search-results-list > li.result-row:hover { border-color: #bbb; }
 
 .result-row-main { display: flex; align-items: center; gap: 10px; }
-.result-row-info { flex: 1; cursor: pointer; }
+.result-row-info { flex: 1; }
+button.result-row-info {
+  min-width: 0; border: 0; padding: 0; background: transparent;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
 .add-btn-inline {
   flex: none;
   padding: 6px 12px;

@@ -33,6 +33,47 @@ async def test_flush_persists_recorded_entries(tmp_path):
     assert raw["A1"][0]["target_author_id"] == "A2"
 
 
+@pytest.mark.parametrize("failure_stage", ["write", "replace"])
+async def test_failed_json_flush_preserves_previous_cache_and_retries(
+    tmp_path, monkeypatch, failure_stage,
+):
+    path = tmp_path / "cache.json"
+    store = JsonNeighborStore(path)
+    store.record({"A1": [conn("old")]})
+    await store.flush()
+    previous_contents = path.read_bytes()
+    store.record({"A1": [conn("new")], "A3": [conn("fresh")]})
+
+    def fail_write(data, stream):
+        stream.write('{"A1":')
+        raise OSError("disk write failed")
+
+    def fail_replace(source, destination):
+        assert source.parent == path.parent
+        assert json.loads(source.read_text())["A1"][0]["target_author_id"] == "new"
+        assert destination == path
+        raise OSError("replacement failed")
+
+    with monkeypatch.context() as patch:
+        if failure_stage == "write":
+            patch.setattr("backend.neighbor_store.json.dump", fail_write)
+        else:
+            patch.setattr("backend.neighbor_store.os.replace", fail_replace)
+        await store.flush()
+
+    assert path.read_bytes() == previous_contents
+    assert list(tmp_path.iterdir()) == [path]
+    assert store._dirty
+
+    await store.flush()
+    assert {
+        author_id: connections[0]["target_author_id"]
+        for author_id, connections in json.loads(path.read_text()).items()
+    } == {"A1": "new", "A3": "fresh"}
+    assert list(tmp_path.iterdir()) == [path]
+    assert not store._dirty
+
+
 async def test_close_flushes_pending(tmp_path):
     path = tmp_path / "cache.json"
     store = JsonNeighborStore(path)

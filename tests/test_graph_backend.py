@@ -795,6 +795,33 @@ async def test_get_neighbors_batch_filters_work_edge_types():
     mock_client.get_citing_works_for_works.assert_not_awaited()
 
 
+async def test_missing_work_record_stays_incomplete_and_is_retried():
+    mock_client = AsyncMock()
+    first_work = make_work("W1", "First paper", [("A1", "Alice")])
+    second_work = make_work("W2", "Recovered paper", [("A2", "Bob")])
+    mock_client.get_works_batch.side_effect = [[first_work], [second_work]]
+    store = RecordingStore()
+    backend = OpenAlexBackend(
+        mock_client, work_edge_types={"authorship"},
+        neighbor_cache=NeighborCache(store=store),
+    )
+
+    first = await backend.get_neighbors_batch(["W1", "W2"])
+
+    assert first["W2"] == []
+    assert first.complete_ids == {"W1"}
+    assert set(store.recorded[0]) == {backend._cache_key("W1")}
+
+    second = await backend.get_neighbors_batch(["W1", "W2"])
+
+    assert second["W1"] == first["W1"]
+    assert [edge.target_author_id for edge in second["W2"]] == ["A2"]
+    assert second.complete_ids == {"W1", "W2"}
+    assert mock_client.get_works_batch.await_args_list[0].args == (["W1", "W2"],)
+    assert mock_client.get_works_batch.await_args_list[1].args == (["W2"],)
+    assert set(store.recorded[1]) == {backend._cache_key("W2")}
+
+
 async def test_cache_is_namespaced_by_active_edge_set():
     mock_client = AsyncMock()
     mock_client.get_works_by_authors.return_value = [
@@ -837,7 +864,7 @@ async def test_cache_is_namespaced_by_active_edge_set():
     mock_client.get_authors_batch.assert_awaited_once_with(["A1"])
 
 
-async def test_author_cache_upgrade_preserves_existing_work_rings():
+async def test_author_cache_upgrade_preserves_current_work_rings():
     mock_client = AsyncMock()
     mock_client.get_works_by_authors.return_value = [
         make_work("W1", "Paper", [("A1", "Alice"), ("A2", "Bob")]),
@@ -847,10 +874,10 @@ async def test_author_cache_upgrade_preserves_existing_work_rings():
         connection_type="authorship", label="Paper",
     )
     # A durable v3 author entry may be incomplete despite having been cached;
-    # v3 work entries are safe and should remain immediately reusable.
+    # current work entries should remain immediately reusable.
     stored = {
         "v3:author:coauthor:A1": [],
-        "v3:work:authorship:W1": [author_edge],
+        "v4:work:authorship:W1": [author_edge],
     }
     store = RecordingStore()
     store.fetch = AsyncMock(side_effect=lambda ids: {i: stored[i] for i in ids if i in stored})
@@ -872,6 +899,35 @@ async def test_author_cache_upgrade_preserves_existing_work_rings():
     assert (await backend.get_neighbors_batch(["A1"]))["A1"] == fresh["A1"]
     mock_client.get_works_by_authors.assert_awaited_once_with(["A1"])
     mock_client.get_works_batch.assert_not_awaited()
+
+
+async def test_work_cache_upgrade_retries_legacy_empty_ring_and_preserves_author_cache():
+    mock_client = AsyncMock()
+    mock_client.get_works_batch.return_value = [
+        make_work("W1", "Recovered paper", [("A1", "Alice")]),
+    ]
+    stored = {
+        "v4:author:coauthor:A1": [],
+        "v3:work:authorship:W1": [],
+    }
+    store = RecordingStore()
+    store.fetch = AsyncMock(side_effect=lambda ids: {i: stored[i] for i in ids if i in stored})
+    backend = OpenAlexBackend(
+        mock_client, edge_types={"coauthor"}, work_edge_types={"authorship"},
+        neighbor_cache=NeighborCache(store=store),
+    )
+
+    cached = await backend.get_neighbors_batch(["A1", "W1"], cached_only=True)
+    assert cached.complete_ids == {"A1"}
+    mock_client.get_works_batch.assert_not_awaited()
+
+    fresh = await backend.get_neighbors_batch(["A1", "W1"])
+    assert fresh["A1"] == []
+    assert [edge.target_author_id for edge in fresh["W1"]] == ["A1"]
+    assert fresh.complete_ids == {"A1", "W1"}
+    assert set(store.recorded[0]) == {"v4:work:authorship:W1"}
+    mock_client.get_works_batch.assert_awaited_once_with(["W1"])
+    mock_client.get_works_by_authors.assert_not_awaited()
 
 
 async def test_plain_bounded_citation_ring_is_not_cached_as_complete():

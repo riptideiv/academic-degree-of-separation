@@ -1,6 +1,20 @@
 (function () {
   const API_BASE = window.RESEARCHER_API_BASE ?? '';
 
+  // Persistence is optional: privacy settings or a full storage quota must not
+  // prevent someone from searching, choosing an institution, or clearing a graph.
+  const storage = {
+    get(key) {
+      try { return localStorage.getItem(key); } catch { return null; }
+    },
+    set(key, value) {
+      try { localStorage.setItem(key, value); } catch { /* use in-memory state */ }
+    },
+    remove(key) {
+      try { localStorage.removeItem(key); } catch { /* use in-memory state */ }
+    },
+  };
+
   // ── State ──────────────────────────────────────────────────────────────────
   const state = {
     origins: new Set(),
@@ -353,7 +367,7 @@
   const rankSelection = {
     institution: null,
   };
-  try { rankSelection.institution = JSON.parse(localStorage.getItem(HOME_INSTITUTION_STORAGE) || 'null'); } catch { /* ignore */ }
+  try { rankSelection.institution = JSON.parse(storage.get(HOME_INSTITUTION_STORAGE) || 'null'); } catch { /* ignore */ }
   if (rankSelection.institution && rankInstitutionInput) rankInstitutionInput.value = rankSelection.institution.display_name;
 
   function renderHomeInstitution() {
@@ -375,6 +389,7 @@
     query: '',
     pageCache: new Map(),    // page number -> PaginatedAuthors/PaginatedWorks response
     topWorksCache: new Map(), // author id -> AuthorWork[] (author-only "top papers" panel)
+    topWorksGeneration: 0,
     currentPage: 1,
     requestId: 0,
     pendingController: null,
@@ -406,7 +421,7 @@
     suggestionRequestId += 1;
     setExplorerLoading(false);
     rankSelection.institution = null;
-    localStorage.removeItem(HOME_INSTITUTION_STORAGE);
+    storage.remove(HOME_INSTITUTION_STORAGE);
     renderHomeInstitution();
     renderRankResults([]);
     setRankStatus('Choose your school to get personalized suggestions.');
@@ -451,7 +466,7 @@
   rankInstitutionInput?.addEventListener('input', () => {
     if (rankSelection.institution?.display_name !== rankInstitutionInput.value.trim()) {
       rankSelection.institution = null;
-      localStorage.removeItem(HOME_INSTITUTION_STORAGE);
+      storage.remove(HOME_INSTITUTION_STORAGE);
       renderHomeInstitution();
       renderRankResults([]);
       renderRankSelectionStatus();
@@ -461,11 +476,8 @@
   async function configureStoredOpenAlexKey() {
     // Migrate older saved keys into the private session cookie, then remove the
     // script-readable copy. New keys are never written to localStorage.
-    let saved;
-    try {
-      saved = localStorage.getItem(OPENALEX_KEY_STORAGE);
-      localStorage.removeItem(OPENALEX_KEY_STORAGE);
-    } catch { /* storage may be unavailable */ }
+    const saved = storage.get(OPENALEX_KEY_STORAGE);
+    storage.remove(OPENALEX_KEY_STORAGE);
     if (saved) {
       await sendOpenAlexKey(saved, false);
       return;
@@ -506,6 +518,7 @@
       const refreshSearch = !!searchSession.pendingController;
       cancelPageRequest();
       searchSession.pageCache.clear();
+      invalidateTopWorksCache();
       if (refreshSearch) loadPage(searchSession.currentPage);
       if (openAlexKeyInput) openAlexKeyInput.value = '';
       setOpenAlexKeyStatus(key ? (showSaved ? 'API key saved' : 'API key active') : 'Personal key removed');
@@ -523,7 +536,7 @@
     if (q.length < 2) return;
     if (q !== searchSession.query || entityType !== searchSession.entityType) {
       searchSession.pageCache.clear();
-      searchSession.topWorksCache.clear();
+      invalidateTopWorksCache();
       searchSession.query = q;
       searchSession.entityType = entityType;
     }
@@ -564,7 +577,7 @@
 
   document.getElementById('restore-settings')?.addEventListener('click', () => {
     let saved;
-    try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return; }
+    try { saved = JSON.parse(storage.get(STORAGE_KEY) || '{}'); } catch { return; }
     if (!saved.settings) return;
     const prev = collectSettings();
     applySettings(saved.settings);
@@ -690,10 +703,14 @@
         : `<strong>${escHtml(item.display_name)}</strong><br>` +
         `<small>${escHtml(item.institution || 'Unknown institution')} · ` +
         `${item.works_count.toLocaleString()} works · ${item.cited_by_count.toLocaleString()} citations</small>`;
-      const arrowHtml = (isWork || isRankInstitution) ? '' : '<span class="result-arrow">&#9660;</span> ';
+      const expandable = !isWork && !isRankInstitution;
+      const info = expandable
+        ? `<button type="button" class="result-row-info" aria-expanded="false" aria-controls="author-works-${escAttr(item.id)}">` +
+          `<span class="result-arrow" aria-hidden="true">&#9660;</span> ${infoHtml}</button>`
+        : `<div class="result-row-info">${infoHtml}</div>`;
       li.innerHTML =
         `<div class="result-row-main">` +
-        `<div class="result-row-info">${arrowHtml}${infoHtml}</div>` +
+        info +
         `<button type="button" class="add-btn-inline">${isRankInstitution || isRankTarget ? 'Select' : 'Add'}</button>` +
         `</div>`;
       li.querySelector('.add-btn-inline').addEventListener('click', e => {
@@ -702,7 +719,7 @@
       });
       // Works show everything (incl. authors) directly on the tile already, so
       // there's no expand-in-place panel for them — only authors get one (top papers).
-      if (!isWork && !isRankInstitution) {
+      if (expandable) {
         li.querySelector('.result-row-info').addEventListener('click', () => toggleAuthorExpand(item, li));
       }
       list.appendChild(li);
@@ -711,24 +728,28 @@
   }
 
   async function toggleAuthorExpand(author, li) {
+    const control = li.querySelector('.result-row-info');
     const arrow = li.querySelector('.result-arrow');
     const existingDetail = li.nextElementSibling;
     if (existingDetail && existingDetail.classList.contains('result-detail')) {
       existingDetail.remove();
       arrow?.classList.remove('expanded');
+      control.setAttribute('aria-expanded', 'false');
       return;
     }
     document.querySelectorAll('#search-results-list .result-detail').forEach(d => d.remove());
     document.querySelectorAll('#search-results-list .result-arrow.expanded').forEach(a => a.classList.remove('expanded'));
+    document.querySelectorAll('#search-results-list .result-row-info[aria-expanded="true"]')
+      .forEach(button => button.setAttribute('aria-expanded', 'false'));
 
     const detail = document.createElement('li');
+    detail.id = control.getAttribute('aria-controls');
     detail.className = 'result-detail';
-    detail.innerHTML = '<em>Loading top papers…</em>';
     li.after(detail);
     arrow?.classList.add('expanded');
+    control.setAttribute('aria-expanded', 'true');
 
-    const works = await loadTopWorks(author.id);
-    detail.innerHTML = works.length ? renderWorksTable(works) : '<em>No works found.</em>';
+    await renderTopWorks(detail, author.id, 10, () => detail.isConnected);
   }
 
   // expandable degree panel cuz number of edges grows quickly
@@ -806,12 +827,11 @@
       `<section class="author-section"><h3>Representative research</h3><div id="sidecar-works" class="sidecar-loading"><span class="mini-spinner"></span>Loading works…</div></section>` +
       `<section class="author-section"><h3>Why this researcher appears</h3>${affiliationHtml}${pathVerificationHtml}` +
       `<ol class="degrees-steps evidence-path">${path || '<li><span class="step-people">Connection details are unavailable.</span></li>'}</ol></section></article>`;
-    const works = await loadTopWorks(author.id);
-    if (requestId !== authorDetailRequestId || selectedSuggestionId !== author.id) return;
     const worksEl = document.getElementById('sidecar-works');
     if (worksEl) {
       worksEl.className = '';
-      worksEl.innerHTML = works.length ? renderWorksTable(works.slice(0, 5)) : '<em>No representative works found.</em>';
+      await renderTopWorks(worksEl, author.id, 5, () =>
+        requestId === authorDetailRequestId && selectedSuggestionId === author.id && worksEl.isConnected);
     }
   }
 
@@ -1051,14 +1071,59 @@
     return `<table class="works-table"><tbody>${rows}</tbody></table>`;
   }
 
+  function invalidateTopWorksCache() {
+    searchSession.topWorksGeneration += 1;
+    searchSession.topWorksCache.clear();
+  }
+
+  async function renderTopWorks(container, authorId, limit, isCurrent) {
+    container.setAttribute('aria-live', 'polite');
+    container.setAttribute('aria-busy', 'true');
+    container.innerHTML = '<em>Loading works…</em>';
+    try {
+      const works = await loadTopWorks(authorId);
+      if (!isCurrent()) return;
+      container.innerHTML = works.length
+        ? renderWorksTable(works.slice(0, limit))
+        : '<em>No works found.</em>';
+    } catch (err) {
+      if (!isCurrent()) return;
+      const message = document.createElement('p');
+      message.textContent = err?.userMessage || 'Could not load works. Please try again.';
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'smooth-button';
+      retry.textContent = 'Retry loading works';
+      retry.addEventListener('click', () => renderTopWorks(container, authorId, limit, isCurrent));
+      container.replaceChildren(message, retry);
+    } finally {
+      if (isCurrent()) container.setAttribute('aria-busy', 'false');
+    }
+  }
+
   async function loadTopWorks(authorId) {
     if (searchSession.topWorksCache.has(authorId)) return searchSession.topWorksCache.get(authorId);
-    try {
-      const r = await fetch(`${API_BASE}/api/authors/${authorId}/works?limit=10`);
-      const works = r.ok ? await r.json() : [];
-      searchSession.topWorksCache.set(authorId, works);
-      return works;
-    } catch { return []; }
+    const generation = searchSession.topWorksGeneration;
+    const r = await fetch(`${API_BASE}/api/authors/${authorId}/works?limit=10`);
+    if (!r.ok) {
+      let data;
+      try { data = await r.json(); } catch { /* non-JSON proxy errors */ }
+      const message = data?.message || data?.detail;
+      throw Object.assign(new Error('works failed'), {
+        userMessage: typeof message === 'string' ? message : null,
+      });
+    }
+    const works = await r.json();
+    if (!Array.isArray(works)) throw new Error('invalid works response');
+    // A response started before a key/query change must not refill the cache or
+    // replace the current panel with results from the old request context.
+    if (generation !== searchSession.topWorksGeneration) {
+      throw Object.assign(new Error('stale works response'), {
+        userMessage: 'Search settings changed. Try loading works again.',
+      });
+    }
+    searchSession.topWorksCache.set(authorId, works);
+    return works;
   }
 
   function onAddFromModal(item) {
@@ -1067,14 +1132,14 @@
       setExplorerLoading(false);
       rankSelection.institution = item;
       rankInstitutionInput.value = item.display_name;
-      localStorage.setItem(HOME_INSTITUTION_STORAGE, JSON.stringify(item));
+      storage.set(HOME_INSTITUTION_STORAGE, JSON.stringify(item));
       renderHomeInstitution();
       renderRankSelectionStatus();
       setTimeout(runInstitutionRank, 0);
     } else if (searchSession.entityType === 'work') addWork(item);
     else addResearcher(item);
     searchSession.pageCache.clear();
-    searchSession.topWorksCache.clear();
+    invalidateTopWorksCache();
     closeSearchModal();
   }
 
@@ -1228,18 +1293,18 @@
     const paths = [...state.paths.entries()];
     const settings = collectSettings();
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ origins, elements, paths, settings }));
+      storage.set(STORAGE_KEY, JSON.stringify({ origins, elements, paths, settings }));
     } catch { /* quota exceeded — skip */ }
   }
 
   function clearSavedState() {
-    localStorage.removeItem(STORAGE_KEY);
+    storage.remove(STORAGE_KEY);
   }
 
   function loadSavedState() {
     let saved;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = storage.get(STORAGE_KEY);
       if (!raw) return;
       saved = JSON.parse(raw);
     } catch { return; }
@@ -1999,10 +2064,10 @@
     }
 
     function save(w) {
-      try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w)); } catch { /* ignore */ }
+      storage.set(SIDEBAR_WIDTH_KEY, String(w));
     }
 
-    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    const saved = storage.get(SIDEBAR_WIDTH_KEY);
     if (saved === 'collapsed') apply('collapsed');
     else if (saved && !Number.isNaN(parseInt(saved, 10))) apply(Math.min(MAX, Math.max(MIN, parseInt(saved, 10))));
 
@@ -2100,13 +2165,13 @@
   const SECTIONS_KEY = 'sidebar_sections_v1';
   (function initSectionCollapse() {
     let saved = {};
-    try { saved = JSON.parse(localStorage.getItem(SECTIONS_KEY) || '{}'); } catch { /* ignore */ }
+    try { saved = JSON.parse(storage.get(SECTIONS_KEY) || '{}'); } catch { /* ignore */ }
     document.querySelectorAll('#sidebar details.side-card').forEach(card => {
       if (card.id in saved) card.open = !!saved[card.id];
       card.addEventListener('toggle', () => {
         const states = {};
         document.querySelectorAll('#sidebar details.side-card').forEach(c => { states[c.id] = c.open; });
-        try { localStorage.setItem(SECTIONS_KEY, JSON.stringify(states)); } catch { /* ignore */ }
+        storage.set(SECTIONS_KEY, JSON.stringify(states));
       });
     });
   })();
