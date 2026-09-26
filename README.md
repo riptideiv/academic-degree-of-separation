@@ -52,6 +52,8 @@ shell or deployment platform. Do not commit `.env.local`.
 | `GOOGLE_CLOUD_PROJECT` | Required only when `BACKEND=bigquery`. |
 | `OPENALEX_CONCURRENCY` | Optional maximum number of concurrent OpenAlex requests; defaults to `15` with a key and `8` without one. |
 | `CACHE_ADMIN_TOKEN` | Optional secret for server cache administration. `DELETE /api/cache` requires this token as a Bearer credential; without it, cache deletion is disabled. Normal searches need no admin token. |
+| `ANALYTICS_ENABLED` | First-party usage collection, enabled by default. Set `false` to stop collecting events. |
+| `ANALYTICS_ADMIN_TOKEN` | Separate secret for the private usage dashboard at `/analytics.html`. Without it, report access is disabled; background collection can still run. |
 
 Example `.env.local`:
 
@@ -106,10 +108,13 @@ backend/
   openalex_client.py  Thin async OpenAlex HTTP client (shared, pooled, HTTP/2,
                       author-metadata LRU)
   neighbor_store.py   Neighbor-ring cache: bounded LRU + durable store (JSON/Supabase)
+  usage_analytics.py  Background usage storage and aggregate reports (SQLite/Postgres)
+  analytics_routes.py  Minimal event collection and protected report API
   bigquery_backend.py Optional BigQuery backend (same interface)
   models.py           Pydantic models
 frontend/
   index.html, app.js, style.css   Cytoscape UI (served as static files)
+  analytics.html      Private usage dashboard; enter the analytics admin token
 scripts/
   bench_search.py     Benchmark harness for /api/graph/expand (cold vs. warm cache)
   bench_ab.py         Interleaved A/B cold-search benchmark: working tree vs a baseline git ref
@@ -234,3 +239,47 @@ alone needs correction.
 `render.yaml` describes a one-service deploy on [Render](https://render.com): it
 installs `requirements.txt`, runs `uvicorn backend.app:app`, and declares the required
 secret environment variables. Render does not read the local `.env.local` file.
+
+## Usage analytics
+
+Background collection starts when the updated app is deployed. Open
+`https://your-app-host/analytics.html` and enter `ANALYTICS_ADMIN_TOKEN` to view
+7-, 30-, 90-, or 365-day totals and daily activity. The dashboard keeps its token
+only in memory and sends it in an Authorization header. Signing out clears it;
+never put it in a URL. The Render Blueprint generates this secret on sync if it
+does not already exist; retrieve it from the service's Environment settings. For
+services not managed by the Blueprint, set a long random secret there manually.
+See [Render's secret generation documentation](https://render.com/docs/blueprint-spec#generating-random-secrets).
+
+| Metric | What it counts |
+|---|---|
+| Unique visitors | Distinct random browser IDs over the selected period, including returning browsers only once. This estimates browsers, not individual people. |
+| Visits | Page loads that run the tracker; reloading adds a visit. Health checks and assets are excluded. |
+| Search submissions | Valid researcher, work, or institution search submissions, including searches served from the browser cache. Pagination and automatic request retries are excluded. |
+| Searching visitors | Distinct browser IDs that submitted a search during the period. |
+| Graph runs | Graph expansion requests; applying options can run several expansions. |
+| Explorer runs | Institution recommendation requests, including automatic refreshes. |
+
+The existing `SUPABASE_POOLER_CONNECTION_STRING` enables durable PostgreSQL
+storage across Render restarts. The app creates `usage_analytics_events` with row
+level security and no public policies; use the trusted table-owner database
+connection, not a browser Supabase key. Without a database connection, analytics
+uses the ignored local `usage_analytics.sqlite3` file. **Render's default ephemeral
+filesystem does not preserve that local file across deploys.** The dashboard
+identifies its storage mode.
+
+Only the event type, UTC day, random event ID, and a hash of the random browser ID
+are stored. A random browser ID is kept in local browser storage, with an in-memory
+fallback when storage is blocked. Analytics does not use cookies, so it also works
+when the tool is embedded in an iframe with third-party cookies blocked. No
+search text, researcher names, IP
+addresses, referrers, or API keys are stored in these analytics records. The
+tracker respects Do Not Track and Global Privacy Control. Up to 365 UTC days are
+retained; older records are removed during database activity. Counts are
+approximate: blocked or cleared browser storage, partitioned iframe storage,
+multiple devices, opt-outs, automation, and network failures can affect them.
+
+Writes run in the background with a bounded queue and idempotent database
+retries. Collection failures do not stop searches. Reports show queued and
+dropped events when applicable; a process crash can lose events not yet flushed.
+This feature does not collect retroactive usage or change hosting access logs.

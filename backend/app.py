@@ -27,6 +27,7 @@ from backend.affiliation_overrides import (
     get_effective_affiliation_overrides,
     get_verified_work_ids,
 )
+from backend.analytics_routes import create_analytics_router
 from backend.bfs import find_path
 from backend.graph_backend import (
     ALL_EDGE_TYPES,
@@ -63,6 +64,7 @@ from backend.path_evidence import (
     evaluate_edge_profile_compatibility,
     evaluate_intermediate_coherence,
 )
+from backend.usage_analytics import UsageAnalytics
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +134,12 @@ def _make_store() -> NeighborStore:
 
 _store: NeighborStore = _make_store()
 _cache = NeighborCache(_store, max_size=_CACHE_MAX)
+_analytics = UsageAnalytics(
+    Path(__file__).parent.parent / "usage_analytics.sqlite3",
+    dsn=os.environ.get("SUPABASE_POOLER_CONNECTION_STRING"),
+    enabled=os.environ.get("ANALYTICS_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"},
+)
+app.include_router(create_analytics_router(_analytics))
 
 
 RANK_EFFECTIVE_POOL_MAX = 80
@@ -162,12 +170,16 @@ RANK_ORIGIN_MAX = 10
 async def lifespan(app: FastAPI):
     try:
         await _store.open()
+        await _analytics.open()
         yield
     finally:
         try:
             await _store.close()
         finally:
-            await _client.aclose()
+            try:
+                await _analytics.close()
+            finally:
+                await _client.aclose()
 
 
 app.router.lifespan_context = lifespan

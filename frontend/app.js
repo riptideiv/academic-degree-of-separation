@@ -534,6 +534,10 @@
   function runSearch(entityType, inputEl) {
     const q = inputEl.value.trim();
     if (q.length < 2) return;
+    globalThis.UsageAnalytics?.track({
+      author: 'author_search', 'rank-target': 'author_search',
+      work: 'work_search', 'rank-institution': 'institution_search',
+    }[entityType]);
     if (q !== searchSession.query || entityType !== searchSession.entityType) {
       searchSession.pageCache.clear();
       invalidateTopWorksCache();
@@ -850,6 +854,7 @@
       return;
     }
 
+    globalThis.UsageAnalytics?.track('explorer_run');
     setExplorerLoading(true);
     const requestId = ++suggestionRequestId;
     try {
@@ -1601,6 +1606,7 @@
       params.set('depth', nb.depth);
       params.set('top_k', nb.topK);
 
+      globalThis.UsageAnalytics?.track('graph_run');
       const source = new EventSource(`${API_BASE}/api/graph/expand?${params}`);
       state.activeSource = source;
 

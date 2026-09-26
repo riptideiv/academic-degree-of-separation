@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Six Degrees of Academia</title>
   <meta name="description" content="Explore connections between researchers through co-authorship, citations, and institutions. Save the paths you discover.">
-  <link rel="stylesheet" href="style.css?v=20260926-1">
+  <link rel="stylesheet" href="style.css?v=20260926-2">
   <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
   <!-- fCoSE: spectral + spring layout for cleaner node separation; it also tiles
        disconnected neighborhoods (the 2+ researcher case) instead of overlapping them. -->
@@ -106,6 +106,8 @@
         <div id="openalex-key-help" class="settings-help">Create a free OpenAlex account, then copy your key from <a href="https://openalex.org/settings/api" target="_blank" rel="noopener">OpenAlex API settings ↗</a>.</div>
         <div id="openalex-key-status" aria-live="polite"></div>
         <button class="smooth-button" id="openalex-key-clear" type="button">Remove my key</button>
+        <div class="section-label">Usage analytics</div>
+        <p class="settings-help usage-notice">When enabled, first-party analytics uses a random browser identifier in local storage to count visits and actions. It does not store search text, researcher names, IP addresses, or API keys. Do Not Track and Global Privacy Control are respected.</p>
       </div>
     </details>
 
@@ -271,7 +273,8 @@
   </div>
 
   <script src="research_export.js?v=20260907-1"></script>
-  <script src="app.js?v=20260926-1"></script>
+  <script src="usage_analytics.js?v=20260926-1"></script>
+  <script src="app.js?v=20260926-2"></script>
 </body>
 
 </html>

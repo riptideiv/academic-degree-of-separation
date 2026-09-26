@@ -3,6 +3,7 @@
   --green-500:#55a974; --green-200:#cfe6d7; --green-100:#e8f4ec;
   --green-50:#f4faf6; --green-focus:rgba(49,115,76,.2);
 }
+.usage-notice { margin-bottom:0; }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {

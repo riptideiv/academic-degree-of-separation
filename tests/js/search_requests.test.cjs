@@ -19,9 +19,11 @@ function harness() {
   const requests = [];
   const rendered = [];
   const messages = [];
+  const tracked = [];
   const elements = new Map();
   const context = vm.createContext({
     API_BASE: '',
+    UsageAnalytics: { track: event => tracked.push(event) },
     AbortController,
     openAlexKeyInput: { value: '' },
     openAlexKeyStatus: { textContent: '' },
@@ -65,11 +67,35 @@ function harness() {
     section('  function invalidateTopWorksCache(', '\n  function onAddFromModal('),
     'this.actions = { runSearch, loadPage, closeSearchModal, sendOpenAlexKey, loadTopWorks, renderTopWorks }; this.session = searchSession;',
   ].join('\n'), context);
-  return { ...context, requests, rendered, messages };
+  return { ...context, requests, rendered, messages, tracked };
 }
 
 const result = (id, page = 1) => ({ results: [{ id }], page, total_pages: 3 });
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('analytics counts valid manual submissions, including cached searches, but not pagination or retries', async () => {
+  const h = harness();
+  h.actions.runSearch('author', { value: ' ' });
+  h.actions.runSearch('author', { value: 'A' });
+  assert.deepEqual(h.tracked, []);
+  h.actions.runSearch('author', { value: 'Private name' });
+  h.requests[0].respond(result('A1'));
+  await flush();
+  h.actions.runSearch('author', { value: 'Private name' });
+  const page = h.actions.loadPage(2);
+  h.requests[1].reject(new Error('offline'));
+  await page;
+  const retry = h.actions.loadPage(2);
+  h.requests[2].respond(result('A2', 2));
+  await retry;
+  assert.deepEqual(h.tracked, ['author_search', 'author_search']);
+  for (const entity of ['rank-target', 'work', 'rank-institution']) {
+    h.actions.runSearch(entity, { value: 'Private search content' });
+    h.requests.at(-1).respond(result('X'));
+    await flush();
+  }
+  assert.deepEqual(h.tracked, ['author_search', 'author_search', 'author_search', 'work_search', 'institution_search']);
+});
 
 test('late response cannot overwrite a different query or entity cache', async () => {
   const h = harness();

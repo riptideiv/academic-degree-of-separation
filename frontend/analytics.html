@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Usage analytics · Six Degrees of Academia</title>
+  <link rel="stylesheet" href="analytics_dashboard.css?v=20260926-1">
+  <script src="analytics_dashboard.js?v=20260926-1" defer></script>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div><a class="brand" href="./">Six Degrees of Academia</a><h1>Usage analytics</h1><p class="muted">Private, first-party counts of visits and research activity.</p></div>
+      <button id="sign-out" type="button" hidden>Sign out</button>
+    </header>
+
+    <form id="analytics-login" class="panel login-panel">
+      <h2>Open your dashboard</h2>
+      <p class="muted">Use the analytics admin token configured on your server. It stays in this tab's memory and is cleared when you sign out or reload.</p>
+      <label for="admin-token">Admin token</label>
+      <div class="login-row"><input id="admin-token" type="password" autocomplete="off" spellcheck="false" required aria-describedby="token-help"><button type="submit" id="open-dashboard">View analytics</button></div>
+      <p id="token-help" class="small muted">The token is sent in an authorization header, never in the URL.</p>
+    </form>
+
+    <div class="toolbar">
+      <label for="analytics-days">Period <select id="analytics-days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 365 days</option></select></label>
+      <button id="refresh-analytics" type="button" hidden>Refresh</button>
+      <p id="period-description" class="muted small"></p>
+    </div>
+    <p id="dashboard-message" class="message" role="status" aria-live="polite"></p>
+
+    <section id="analytics-results" hidden aria-label="Usage results">
+      <p id="storage-status" class="storage-status" role="status"></p>
+      <div class="metrics">
+        <article class="panel metric"><h2>Unique browsers</h2><strong id="total-unique_visitors">—</strong><p>Approximate visitors in this period</p></article>
+        <article class="panel metric"><h2>Page views</h2><strong id="total-page_views">—</strong><p>Tool page loads</p></article>
+        <article class="panel metric"><h2>Searches</h2><strong id="total-searches">—</strong><p>Manual search submissions</p></article>
+        <article class="panel metric"><h2>Searching browsers</h2><strong id="total-searching_visitors">—</strong><p>Browsers that submitted a search</p></article>
+        <article class="panel metric"><h2>Graph runs</h2><strong id="total-graph_runs">—</strong><p>Connection requests, including rebuilds</p></article>
+        <article class="panel metric"><h2>Explorer runs</h2><strong id="total-explorer_runs">—</strong><p>Suggestion requests, including automatic refreshes</p></article>
+      </div>
+
+      <section class="panel breakdown" aria-labelledby="breakdown-title">
+        <h2 id="breakdown-title">What people search for</h2>
+        <dl><div><dt>Researchers</dt><dd id="event-author_search">—</dd></div><div><dt>Works</dt><dd id="event-work_search">—</dd></div><div><dt>Institutions</dt><dd id="event-institution_search">—</dd></div></dl>
+        <p class="muted small">Counts only; no search terms are collected. Pagination and request retries do not add searches.</p>
+      </section>
+
+      <section class="panel daily-panel" aria-labelledby="daily-title">
+        <div class="section-heading"><h2 id="daily-title">Daily activity</h2><span class="small muted">UTC calendar days · newest first</span></div>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Scrollable daily usage table">
+          <table><caption class="visually-hidden">Daily visits and research actions</caption><thead><tr><th scope="col">Date</th><th scope="col">Browsers</th><th scope="col">Page views</th><th scope="col">Searches</th><th scope="col">Searching browsers</th><th scope="col">Graph runs</th><th scope="col">Explorer runs</th></tr></thead><tbody id="daily-activity"></tbody></table>
+        </div>
+      </section>
+      <p class="muted explanation">Unique browsers are an estimate, not a count of people. Different devices, cleared or blocked browser storage, and separate embedded contexts can count the same person again; blocked tracking can go uncounted. Period totals deduplicate browsers across days, so daily unique counts should not be added together. Actions count attempts, not successful results.</p>
+    </section>
+  </main>
+</body>
+</html>

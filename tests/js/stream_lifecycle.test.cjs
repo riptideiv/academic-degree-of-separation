@@ -16,6 +16,7 @@ function section(start, end) {
 function harness() {
   const nodes = new Map(), controls = new Map(), timers = new Map();
   const sources = [], messages = [], removedChips = [], addedEdges = [];
+  const tracked = [];
   const options = { edges: ['coauthor'], workEdges: ['authorship'] };
   let timerId = 0, layouts = 0, saves = 0;
   const control = id => {
@@ -28,6 +29,7 @@ function harness() {
   const node = id => ({ length: Number(nodes.has(id)), data: key => nodes.get(id)?.[key] });
   const context = vm.createContext({
     API_BASE: '', URLSearchParams,
+    UsageAnalytics: { track: event => tracked.push(event) },
     document: {
       getElementById: control,
       querySelectorAll: () => [],
@@ -75,12 +77,27 @@ function harness() {
     context.state.origins.add(id);
     return context.actions.startExpansion(id);
   };
-  return { ...context, nodes, timers, sources, messages, removedChips, addedEdges,
+  return { ...context, nodes, timers, sources, messages, removedChips, addedEdges, tracked,
     options, control, existing, start, layouts: () => layouts, saves: () => saves };
 }
 
 const origin = id => ({ id, name: id, type: 'origin' });
 const pathResult = (from, to) => ({ from_id: from, to_id: to, found: true, hops: 1, steps: [] });
+
+test('one graph run is recorded per stream attempt, independent of stream events or results', async () => {
+  const h = harness();
+  const first = h.start('A');
+  assert.deepEqual(h.tracked, ['graph_run']);
+  h.sources[0].emit('node', origin('A'));
+  h.sources[0].emit('progress', { message: 'Searching' });
+  h.sources[0].emit('done');
+  await first;
+  assert.deepEqual(h.tracked, ['graph_run']);
+  const second = h.start('B');
+  h.sources[1].emit('error');
+  await second;
+  assert.deepEqual(h.tracked, ['graph_run', 'graph_run']);
+});
 
 test('done closes the stream, clears layout timers and unlocks controls', async () => {
   const h = harness();

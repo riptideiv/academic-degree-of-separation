@@ -9,4 +9,5 @@ venv/
 .superpowers/
 neighbor_cache.json
 neighbor_cache_v2.json
+usage_analytics.sqlite3*
 *.local*

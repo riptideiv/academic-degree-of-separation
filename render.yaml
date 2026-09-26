@@ -16,3 +16,5 @@ services:
         sync: false
       - key: GOOGLE_CLOUD_PROJECT
         sync: false
+      - key: ANALYTICS_ADMIN_TOKEN
+        generateValue: true
