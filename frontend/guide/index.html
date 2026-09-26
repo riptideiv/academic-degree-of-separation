@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Find Research Collaborators · Six Degrees of Academia</title>
+  <meta name="description" content="Find potential collaborators at your university, trace coauthor connections, and explore academic networks with Six Degrees of Academia and OpenAlex.">
+  <link rel="canonical" href="https://academic-degree-of-separation.onrender.com/guide/">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#173d2b">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Six Degrees of Academia">
+  <meta property="og:title" content="Find research collaborators · Six Degrees of Academia">
+  <meta property="og:description" content="A practical guide to finding researchers connected to the authors you read, exploring coauthor paths, and making sense of academic networks.">
+  <meta property="og:url" content="https://academic-degree-of-separation.onrender.com/guide/">
+  <meta property="og:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Six Degrees of Academia — explore connections between researchers">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Find research collaborators · Six Degrees of Academia">
+  <meta name="twitter:description" content="Find researchers connected to the authors you read. A practical guide to Institution Explorer and academic coauthor networks.">
+  <meta name="twitter:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png">
+  <meta name="twitter:image:alt" content="Six Degrees of Academia — explore connections between researchers">
+  <link rel="stylesheet" href="/guide.css?v=20260926-1">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to the guide</a>
+  <header class="site-header">
+    <a class="brand" href="/">Six Degrees <span>of Academia</span></a>
+    <nav aria-label="Main navigation">
+      <a href="#institution">Find collaborators</a>
+      <a href="#connections">Trace connections</a>
+      <a class="button button-small" href="/">Open the tool <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+  <main id="main-content">
+    <section class="hero" aria-labelledby="guide-title">
+      <p class="eyebrow">From a reading list to a research network</p>
+      <h1 id="guide-title">Find researchers connected to the authors you read</h1>
+      <p class="intro">You know the papers that interest you. Who at your university works in a nearby research network? Six Degrees of Academia helps you explore that question through coauthor connections, publication evidence, and OpenAlex data.</p>
+      <div class="hero-actions"><a class="button" href="/">Explore the research graph <span aria-hidden="true">→</span></a><a href="#institution">Start with the campus workflow</a></div>
+      <p class="hero-note">Free to explore · Public source code · Researcher and paper search</p>
+    </section>
+
+    <section id="institution" class="section" aria-labelledby="institution-title">
+      <p class="eyebrow">A useful starting point</p>
+      <h2 id="institution-title">Discover potential collaborators at your university</h2>
+      <p>If you are starting a project or exploring a research area, a department directory can be a long list of unfamiliar names. Use the authors you already read as a starting point for finding people to investigate.</p>
+      <ol class="steps">
+        <li><h3>Add authors whose work interests you</h3><p>Open the tool, search a researcher's name, and select the matching profile. Check their affiliation and works to avoid namesakes. Add a few researchers relevant to your question; these become the starting points for Institution Explorer.</p></li>
+        <li><h3>Choose your home institution</h3><p>Open <strong>Institution Explorer</strong>, search for your university, and choose it. The explorer looks for researchers at that institution with coauthor paths to your starting authors. Its suggestions use coauthorship, even when the main graph also includes citations or shared institutions.</p></li>
+        <li><h3>Read the evidence behind a suggestion</h3><p>Look at the research topics, representative works, and publications supporting each coauthor hop. Follow the OpenAlex or ORCID links to check the profile. Affiliation labels distinguish reviewed current evidence from OpenAlex's last-known affiliation.</p></li>
+        <li><h3>Build a shortlist, then investigate</h3><p>Read a recent paper and check the researcher's university page before deciding whether their work fits your project. A short network path can be a useful discovery clue; it does not establish availability, interest in collaboration, or a personal introduction.</p></li>
+      </ol>
+    </section>
+
+    <section id="connections" class="section" aria-labelledby="connections-title">
+      <p class="eyebrow">Another way in</p>
+      <h2 id="connections-title">Trace a connection between two researchers</h2>
+      <p>Add two researcher profiles to the graph. The sidebar lists degrees of separation and the connecting steps as searches finish. You can also search for a paper by title to explore its authors and citation connections.</p>
+      <p>For a coauthor network, keep <strong>Co-authorship</strong> selected and turn off <strong>Citations</strong> and <strong>Institution</strong> under Search options. Choose <strong>Just the connection</strong> for a simpler view, then select <strong>Apply options</strong>. Mixed edge types answer a broader question about scholarly connections; their distance is not a coauthor-only degree count.</p>
+      <p>Open the legend to interpret the edges. You can export a graph image or a Markdown path report to keep with your reading notes. If you want a quick introduction, the empty graph includes a Geoffrey Hinton ↔ Yoshua Bengio example.</p>
+    </section>
+
+    <section class="section" aria-labelledby="use-cases-title">
+      <h2 id="use-cases-title">Two more reasons to explore</h2>
+      <div class="use-cases">
+        <article><span class="card-label">Before a conference</span><h3>Give your reading some context</h3><p>Add a speaker and an author you follow. Explore connecting work and read it before the session. Use what you learn to prepare a specific research question.</p></article>
+        <article><span class="card-label">In a classroom</span><h3>Make network concepts concrete</h3><p>Compare the same pair with coauthor-only and mixed connections. Discuss how the definition of an edge changes a path, and why data coverage affects what a network can show.</p></article>
+      </div>
+    </section>
+
+    <section class="section limits" aria-labelledby="limits-title">
+      <h2 id="limits-title">What a connection does—and does not—tell you</h2>
+      <p>The tool uses <a href="https://openalex.org/">OpenAlex</a> scholarly records. Author identities, affiliations, and publication coverage can be incomplete or outdated. Check the underlying works and current university pages when a result matters.</p>
+      <p>Searches have time and coverage limits. Institution Explorer checks a bounded candidate set, not every person at a university. An incomplete search or no path found does not prove that no connection exists. Results are a starting point for research, not an exhaustive ranking of collaborators or a certified Erdős number.</p>
+    </section>
+    <section class="closing" aria-label="Try the tool">
+      <h2>Start with an author you already read.</h2>
+      <p>Then see where their research connections lead.</p>
+      <a class="button" href="/">Open Six Degrees of Academia <span aria-hidden="true">→</span></a>
+    </section>
+  </main>
+  <footer><a href="/">Research graph</a><a href="https://github.com/riptideiv/academic-degree-of-separation">Source code and setup</a><span>Built with <a href="https://openalex.org/">OpenAlex</a> data.</span></footer>
+</body>
+</html>

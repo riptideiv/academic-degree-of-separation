@@ -1,0 +1,8 @@
+User-agent: *
+Disallow: /api/
+Disallow: /docs
+Disallow: /redoc
+Disallow: /openapi.json
+Disallow: /health
+
+Sitemap: https://academic-degree-of-separation.onrender.com/sitemap.xml

@@ -5,6 +5,15 @@ app finds how they're connected (through **co-authorship**, **citations**, or
 **shared institutions**) using the free [OpenAlex](https://openalex.org) scholarly
 graph, then draws the network interactively.
 
+[Open the tool](https://academic-degree-of-separation.onrender.com/) ·
+[How to find research collaborators](https://academic-degree-of-separation.onrender.com/guide/)
+
+**Start with authors you already read.** Add their profiles, choose your university
+in Institution Explorer, and investigate local researchers connected through
+coauthorship. You can also trace connections before a seminar or use the graph to
+teach how coauthor, citation, and institution networks differ. Suggestions are leads
+to investigate, not proof of a personal relationship or an exhaustive directory.
+
 - **Backend:** FastAPI. Bidirectional BFS over OpenAlex, streamed to the browser via
   Server-Sent Events (SSE).
 - **Frontend:** plain HTML/CSS/JS with [Cytoscape.js](https://js.cytoscape.org/)
@@ -64,6 +73,34 @@ SUPABASE_POOLER_CONNECTION_STRING=postgresql://...
 SUPABASE_URL=https://your-project.supabase.co
 GOOGLE_CLOUD_PROJECT=your-gcp-project
 ```
+
+## Search visibility and outreach
+
+The app and the static `/guide/` page have distinct titles, descriptions, canonical
+URLs, and social previews. The guide is readable without JavaScript and linked
+from the app. `/robots.txt` advertises `/sitemap.xml`, which lists only those two
+public pages. The private analytics page remains `noindex` and crawlable so search
+engines can read that directive. API and operational routes are excluded from
+crawling; robots rules are not access controls.
+
+Canonical and social URLs target the current Render deployment. When deploying
+under a new public hostname, update the URLs together in `frontend/index.html`,
+`frontend/guide/index.html`, `frontend/robots.txt`, and `frontend/sitemap.xml`.
+`frontend/social-preview.svg` is the editable source for the 1200 × 630 PNG used
+by social previews; regenerate the PNG when changing the artwork.
+
+The separate introduction at `www.xingruic.net/tools/researchers` embeds this app
+and is outside this repository. It already has its own canonical and social
+metadata. Its owner should add visible use-case copy and a normal link to the
+guide outside the iframe; embedded app metadata does not replace the outer page's
+metadata. The two hosts currently retain their own canonicals. If consolidating
+the landing page onto one domain later, align content and redirects deliberately.
+
+The [two-week traffic plan](docs/traffic-plan.md) includes specific audiences,
+owner Search Console setup steps, a demo script, unposted outreach drafts, and
+measurement limits. Publishing a sitemap does not itself submit it to Search
+Console or guarantee indexing. The guide is untracked; existing analytics count
+activity in the interactive app, not guide visits or guide-to-app conversions.
 
 ## Running the tests
 
