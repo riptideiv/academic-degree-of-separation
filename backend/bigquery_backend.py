@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from google.cloud import bigquery
 
-from backend.graph_backend import ALL_EDGE_TYPES, GraphBackend
+from backend.graph_backend import ALL_EDGE_TYPES, GraphBackend, _NeighborBatch
 from backend.models import Connection
 
 log = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class BigQueryBackend(GraphBackend):
 
     async def get_neighbors_batch(
         self, author_ids: list[str], cached_only: bool = False
-    ) -> dict[str, list[Connection]]:
+    ) -> _NeighborBatch:
         # `cached_only` is ignored: BigQuery bulk reads carry no OpenAlex-API cost.
         full_ids = [f"https://openalex.org/{aid}" for aid in author_ids]
 
@@ -36,13 +36,21 @@ class BigQueryBackend(GraphBackend):
         if "institution" in self._edge_types:
             tasks.append(self._query_institutions(full_ids))
 
+        if not tasks:
+            return _NeighborBatch(
+                {aid: [] for aid in author_ids},
+                complete_ids=set(author_ids),
+            )
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         by_source: dict[str, list[Connection]] = {aid: [] for aid in author_ids}
         seen: dict[str, set[str]] = {aid: set() for aid in author_ids}
+        query_failed = False
 
         for batch_rows in results:
             if isinstance(batch_rows, Exception):
+                query_failed = True
                 log.warning("BigQuery query failed: %s", batch_rows, exc_info=batch_rows)
                 continue
             log.debug("BigQuery query returned %d rows", len(batch_rows))
@@ -60,7 +68,10 @@ class BigQueryBackend(GraphBackend):
                         label=row["label"] or "",
                     ))
 
-        return by_source
+        # Fail closed: any failed edge-type query means rings are incomplete, so
+        # BFS must not treat empty/partial results as exhaustive evidence.
+        complete_ids: set[str] = set() if query_failed else set(author_ids)
+        return _NeighborBatch(by_source, complete_ids=complete_ids)
 
     async def _run_query(self, sql: str, params: list) -> list:
         loop = asyncio.get_event_loop()
