@@ -187,6 +187,8 @@ async def test_graph_path_failure_emits_incomplete_pair_instead_of_silent_succes
 
 
 async def test_graph_stream_close_cancels_and_waits_for_path_tasks():
+    from starlette.requests import Request
+
     started = asyncio.Event()
     finished = asyncio.Event()
 
@@ -202,11 +204,26 @@ async def test_graph_stream_close_cancels_and_waits_for_path_tasks():
         await started.wait()
         yield {"type": "expansion", "nodes": [], "edges": []}
 
+    request = Request({
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/api/graph/expand",
+        "raw_path": b"/api/graph/expand",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 443),
+    })
+
     with patch.object(api, "_client") as upstream, patch.object(api, "_make_backend"), patch.object(
         api, "_collect_path", pending_path,
     ), patch("backend.graph_expand.expand_graph", expansion):
         upstream.get_author = AsyncMock(return_value={"display_name": "Alice"})
         response = await api.graph_expand(
+            request,
             new_id="A1", origin_ids="A2", path_ids="", edges=["coauthor"],
             work_edges=["authorship"], depth=1, top_k=1,
         )

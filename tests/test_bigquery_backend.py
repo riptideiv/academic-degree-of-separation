@@ -71,6 +71,22 @@ async def test_failed_query_returns_empty_for_affected_authors():
         result = await backend.get_neighbors_batch(["A1"])
 
     assert result["A1"] == []
+    # Fail closed: BFS must not treat a failed query as an exhaustive empty ring.
+    assert result.complete_ids == set()
+
+
+async def test_successful_batch_marks_authors_complete():
+    backend = make_backend(edge_types={"coauthor"})
+    fake_rows = [
+        {"source_id": "A1", "target_id": "A2", "target_name": "Bob",
+         "connection_type": "coauthor", "label": "Paper 1"},
+    ]
+    with patch.object(backend, "_run_query", AsyncMock(return_value=fake_rows)):
+        result = await backend.get_neighbors_batch(["A1", "A2"])
+
+    assert result.complete_ids == {"A1", "A2"}
+    assert len(result["A1"]) == 1
+    assert result["A2"] == []
 
 
 async def test_retains_other_batch_sources_and_excludes_self_edges():

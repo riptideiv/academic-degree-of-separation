@@ -10,11 +10,29 @@ services:
         sync: false
       - key: OPENALEX_MAILTO
         sync: false
+      - key: OPENALEX_CONCURRENCY
+        sync: false
       - key: SUPABASE_POOLER_CONNECTION_STRING
         sync: false
       - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_POOL_MAX
+        sync: false
+      - key: NEIGHBOR_CACHE_MAX
+        sync: false
+      - key: BACKEND
+        sync: false
       - key: GOOGLE_CLOUD_PROJECT
         sync: false
+      - key: CACHE_ADMIN_TOKEN
+        generateValue: true
+      - key: ANALYTICS_ENABLED
+        value: "true"
       - key: ANALYTICS_ADMIN_TOKEN
         generateValue: true
+      - key: RATE_LIMIT_EXPAND_PER_MIN
+        value: "30"
+      - key: RATE_LIMIT_PATH_PER_MIN
+        value: "30"
+      - key: RATE_LIMIT_INSTITUTION_PER_MIN
+        value: "20"

@@ -64,6 +64,11 @@ from backend.path_evidence import (
     evaluate_edge_profile_compatibility,
     evaluate_intermediate_coherence,
 )
+from backend.rate_limit import (
+    enforce_expand,
+    enforce_institution,
+    enforce_path,
+)
 from backend.usage_analytics import UsageAnalytics
 
 log = logging.getLogger(__name__)
@@ -1266,6 +1271,7 @@ async def search_institutions(
 
 @app.get("/api/institution-suggestions")
 async def institution_rank(
+    request: Request,
     institution: str | None = Query(default=None, min_length=2, max_length=300),
     institution_id: str | None = Query(default=None),
     origin_ids: list[str] = Query(default=[]),
@@ -1280,6 +1286,7 @@ async def institution_rank(
     balances topic and citation lanes; a result is shown only after every displayed
     hop has exact publication evidence and passes identity-continuity checks.
     """
+    enforce_institution(request)
     background_tasks: set[asyncio.Task] = set()
     try:
         return await _institution_rank(
@@ -2028,10 +2035,12 @@ async def clear_cache(request: Request):
 
 @app.get("/api/path")
 async def get_path(
+    request: Request,
     from_id: str = Query(..., alias="from"),
     to_id: str = Query(..., alias="to"),
     edges: list[str] = Query(default=list(ALL_EDGE_TYPES)),
 ):
+    enforce_path(request)
     from_id = _validate_id(from_id, "A")
     to_id = _validate_id(to_id, "A")
     edge_types = _validate_edges(edges, ALL_EDGE_TYPES)
@@ -2063,6 +2072,7 @@ async def get_path(
 
 @app.get("/api/graph/expand")
 async def graph_expand(
+    request: Request,
     new_id: str = Query(...),
     origin_ids: str = Query(default="", max_length=1600),   # comma-sep existing origin IDs
     path_ids: str = Query(default="", max_length=32000),     # comma-sep existing path node IDs from client
@@ -2073,6 +2083,7 @@ async def graph_expand(
 ):
     from backend.graph_expand import _edge_key, expand_graph, stitch_edges
 
+    enforce_expand(request)
     new_id = _validate_id(new_id)
     edge_types = _validate_edges(edges, ALL_EDGE_TYPES)
     work_edge_types = _validate_edges(work_edges, ALL_WORK_EDGE_TYPES)
