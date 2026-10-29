@@ -260,7 +260,7 @@ class OpenAlexClient:
         return default
 
     def _user_agent(self) -> str:
-        ua = "researcher-degree-of-separation/1.0"
+        ua = "coauthor-distance/1.0"
         return f"{ua} (mailto:{self._mailto})" if self._mailto else ua
 
     async def _http_client(self) -> httpx.AsyncClient:

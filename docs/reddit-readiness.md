@@ -1,4 +1,4 @@
-# Coauthor Atlas: Reddit readiness
+# Coauthor Distance: Reddit readiness
 
 Decision date: 2026-10-28. These are product judgments, not evidence of audience demand.
 
@@ -26,14 +26,12 @@ a complete literature-review tool, or a certified Erdős-number calculator.
    labels, a next-step prompt, a map toolbar, a result banner that opens the evidence,
    campus onboarding, and a way to turn an inspected neighbor into a starting point.
    Connection and display settings remain available through disclosures.
-3. **Name:** “Six Degrees of Academia” is already used by a closely related
-   [coauthorship-map project](https://github.com/dyllan-to-you/Six-Degrees-Of-Academia).
-   Use **Coauthor Atlas**. Exact-name web
-   searches did not identify a competing Coauthor Atlas app during this review;
-   domain availability and trademark status have not been established. The name
-   reflects the default coauthor search while the guide explains broader modes.
-   Keep the existing Render service name, repository slug, and canonical URL so
-   this change does not create a new service or break existing links.
+3. **Name:** use **Coauthor Distance**, selected on 2026-10-29 for its direct
+   description of the main feature. Both `coauthordistance.com` and
+   `coauthordistance.app` returned no registration in their registries on that date.
+   Prefer `.com` as the public domain; connect it after registration. The source
+   repository is `riptideiv/coauthor-distance`. Keep the existing Render service
+   name and canonical URL until the chosen domain is registered and connected.
 4. **Visual style:** use a quiet workspace with plain typography and controls.
    The starting screen contains a heading and actions; explanatory copy belongs in
    About or beside the specific setting that needs it. Omit decorative captions,
@@ -71,7 +69,7 @@ a complete literature-review tool, or a certified Erdős-number calculator.
 
 **Body:**
 
-I revived a side project called Coauthor Atlas. Add two researchers and it looks for
+I revived a side project called Coauthor Distance. Add two researchers and it looks for
 publications that connect them, then draws a little network you can explore.
 
 There’s a one-click Geoffrey Hinton / Yoshua Bengio example, or you can try yourself,
@@ -83,7 +81,7 @@ or outdated. Searches are bounded, and “no path found” doesn’t prove that 
 connection exists. It maps scholarly records, not who personally knows whom.
 
 [Try it](https://academic-degree-of-separation.onrender.com/) ·
-[Source](https://github.com/riptideiv/academic-degree-of-separation)
+[Source](https://github.com/riptideiv/coauthor-distance)
 
 I’d especially like feedback on confusing results, picking the right author profile,
 and whether the campus explorer is useful.

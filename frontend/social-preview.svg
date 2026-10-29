@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
-  <title>Coauthor Atlas — Research is a small world.</title>
+  <title>Coauthor Distance — Research is a small world.</title>
   <rect width="1200" height="630" fill="#f8f6f0"/>
   <rect x="0" y="0" width="14" height="630" fill="#243d36"/>
   <g font-family="Arial, Helvetica, sans-serif" fill="#243d36">
-    <text x="76" y="102" font-size="27" font-weight="700">COAUTHOR ATLAS</text>
+    <text x="76" y="102" font-size="27" font-weight="700">COAUTHOR DISTANCE</text>
     <text x="72" y="233" font-family="Georgia, serif" font-size="76" font-weight="400">Research is a</text>
     <text x="72" y="308" font-family="Georgia, serif" font-size="76" font-weight="400">small world.</text>
     <text x="76" y="391" font-size="27" fill="#61685f">Follow the publications that connect</text>

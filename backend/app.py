@@ -93,7 +93,7 @@ class _OpenAlexKeyMiddleware:
             request_api_key.reset(token)
 
 
-app = FastAPI(title="Coauthor Atlas")
+app = FastAPI(title="Coauthor Distance")
 
 app.add_middleware(
     CORSMiddleware,
