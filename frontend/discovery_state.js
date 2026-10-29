@@ -19,6 +19,11 @@
         if (references.length >= 8) throw new Error('Choose up to eight references.');
         references.push(ref);
       },
+      replace(values) {
+        if (!Array.isArray(values) || values.length > 8) throw new Error('Choose up to eight references.');
+        const next = values.map(reference);
+        references = next.filter((item, index) => next.findIndex(x => x.id === item.id) === index);
+      },
       remove(id) { references = references.filter(item => item.id !== id); },
       submit(institution) {
         if (!institution || !/^I\d{1,20}$/.test(institution.id)) throw new Error('Choose a university.');

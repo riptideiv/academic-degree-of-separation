@@ -412,11 +412,11 @@ class OpenAlexClient:
         while len(self._search_cache) > self._search_cache_max:
             self._search_cache.popitem(last=False)
 
-    async def get_author_works(self, author_id: str, limit: int = 20) -> list[dict]:
+    async def get_author_works(self, author_id: str, limit: int = 20, sort: str = "cited") -> list[dict]:
         data = await self._get(f"{API_BASE}/works", {
             "filter": f"authorships.author.id:{author_id}",
             "per_page": limit,
-            "sort": "cited_by_count:desc",
+            "sort": "publication_date:desc" if sort == "recent" else "cited_by_count:desc",
             "select": "id,title,cited_by_count,publication_year,doi,referenced_works,authorships",
         })
         return data.get("results", [])

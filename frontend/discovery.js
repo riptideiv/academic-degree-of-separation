@@ -10,6 +10,8 @@
   let institutionGeneration = 0;
   let institutionController = null;
   let current = null;
+  let navigating = false;
+  const cache = new Map();
   const connectionControllers = new Set();
 
   function renderInstitution() {
@@ -62,9 +64,15 @@
       if (version === institutionGeneration) $('university-results').innerHTML = `<li role="alert">${esc(error.name === 'AbortError' ? 'University search timed out. Try again.' : error.message)}</li>`;
     } finally { clearTimeout(timeout); }
   };
-  async function search() {
+  async function search({ fromURL = false } = {}) {
     let query;
     try { query = app.intent.submit(institution); } catch (error) { app.notice(error.message); return; }
+    const path = window.DiscoveryLinks.encode(query);
+    if (!fromURL && window.location.pathname + window.location.search !== path) {
+      navigating = true;
+      app.navigate(path);
+      navigating = false;
+    }
     stop();
     for (const abort of connectionControllers) abort.abort();
     connectionControllers.clear();
@@ -83,6 +91,12 @@
       const data = await request('/api/discover?' + params, { signal: abort.signal });
       if (version !== generation) return;
       current = data;
+      cache.set(path, data);
+      if (cache.size > 10) cache.delete(cache.keys().next().value);
+      // Resolve shared IDs into source labels without changing the submitted intent.
+      institution = data.query.institution;
+      renderInstitution();
+      app.replaceReferences(data.query.references);
       render(data);
       $('discovery-share').hidden = false;
     } catch (error) {
@@ -186,8 +200,33 @@
       }
     } finally { clearTimeout(timeout); connectionControllers.delete(abort); }
   }
-  $('discovery-submit').onclick = search;
+  function restoreRoute() {
+    if (navigating || window.location.pathname !== '/discover') return;
+    let query;
+    try { query = window.DiscoveryLinks.decode(window.location.search); }
+    catch (error) { stop(error.message); return; }
+    if (!query) return;
+    const path = window.DiscoveryLinks.encode(query);
+    stop();
+    institution = query.institution;
+    app.replaceReferences(query.references);
+    renderInstitution();
+    if (cache.has(path)) {
+      const cached = cache.get(path), sameResults = current === cached;
+      current = cached;
+      institution = current.query.institution;
+      app.replaceReferences(current.query.references);
+      renderInstitution();
+      if (!sameResults) render(current);
+      else $('discovery-status').textContent = current.message || `${current.results.length} researchers · ${current.coverage.works_checked} publications checked`;
+      $('discovery-share').hidden = false;
+    } else search({ fromURL: true });
+  }
+  $('discovery-share').onclick = () => { if (current) app.share(window.location.origin + window.DiscoveryLinks.encode(current.query)); };
+  window.addEventListener('research-route', restoreRoute);
+  $('discovery-submit').onclick = () => search();
   $('discovery-cancel').onclick = () => stop('Search stopped. Your previous results are preserved.');
   renderInstitution();
+  restoreRoute();
   window.Discovery = { search, setInstitution, current: () => current, institution: () => institution };
 })();
