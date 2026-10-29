@@ -83,3 +83,30 @@ body[data-view="connections"] #app-main { overflow:hidden; }
 @media(prefers-reduced-motion:reduce) { *, *::before, *::after { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }
 
 #connections-view .workspace-mobile-brand { display:none; }
+#reference-kind { margin-bottom:10px; font-size:14px; min-height:40px; padding:8px 10px; }
+#university-selection { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:44px; }
+#university-form { margin-top:60px; }
+.university-input > label { margin-bottom:0; }
+.discovery-controls { display:flex; flex-wrap:wrap; align-items:center; gap:18px; margin-top:28px; }
+.discovery-controls .primary-button { margin:0; }
+#discovery-output { margin-top:36px; }
+#discovery-status:empty { display:none; }
+#discovery-status { margin-bottom:16px; }
+.results-heading { padding-bottom:24px; border-bottom:1px solid var(--line); }
+.results-heading h2 { margin:0 0 10px; }
+.results-heading p { color:var(--muted); }
+.discovery-result { padding:28px 0; border-bottom:1px solid var(--line); }
+.result-heading { display:flex; justify-content:space-between; gap:16px; align-items:center; }
+.result-heading h3 { font-size:23px; font-weight:600; letter-spacing:-.3px; }
+.result-heading h3 a { text-decoration:none; }
+.result-heading h3 a:hover { text-decoration:underline; }
+.match-topics { margin:16px 0 0; }
+.discovery-result .publication-list li { border:0; padding:10px 0; }
+.result-actions { display:flex; flex-wrap:wrap; gap:12px; margin-top:18px; }
+.result-actions button { font-size:14px; }
+.connection-check { margin-top:20px; border-left:2px solid var(--line); padding:0 0 0 20px; }
+.connection-check select { display:block; width:100%; margin:10px 0; }
+.connection-check form { margin:12px 0; }
+.connection-status { margin-top:14px; }
+.coverage-note { color:var(--muted); font-size:14px; margin-top:24px; }
+@media(max-width:780px) { #university-form { margin-top:10px; } .result-heading h3 { font-size:21px; } }

@@ -2022,8 +2022,7 @@
   });
   document.getElementById('start-campus')?.addEventListener('click', () => {
     globalThis.ResearchApp?.navigate('/discover');
-    document.getElementById('institution-explorer').open = true;
-    rankInstitutionInput.focus();
+    document.getElementById('university-query')?.focus();
   });
 
   document.getElementById('share-graph')?.addEventListener('click', async () => {

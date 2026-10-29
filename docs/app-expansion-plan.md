@@ -25,11 +25,11 @@ Each branch receives its own commits and stacked pull request. Do not squash or 
 
 ### Phase 2
 
-- [ ] Explicit topic selection and selected papers work without an existing graph.
-- [ ] Discovery produces institution-associated people with publication evidence.
-- [ ] Connection checking is optional and cannot remove relevant results.
-- [ ] Input validation, stale-response handling, cancellation, and bounded work are tested.
-- [ ] Live topic, paper, and author queries evaluated across different fields/institutions.
+- [x] Explicit topic selection and selected papers work without an existing graph.
+- [x] Discovery produces institution-associated people with publication evidence.
+- [x] Connection checking is optional and cannot remove relevant results.
+- [x] Input validation, stale-response handling, cancellation, and bounded work are tested.
+- [x] Live topic, paper, and author queries evaluated across different fields/institutions.
 
 ### Phase 3
 
@@ -55,3 +55,10 @@ Live local checks covered researcher search, a directly opened Hinton profile,
 publication loading, profile-to-graph navigation, graph completion, and returning
 to the unchanged reference selection. Narrow-mobile and desktop layouts inspected.
 The Saved destination is an intermediate shell until phase 3.
+
+## Phase 2 evidence
+
+356 pytest tests passed (3 optional skips); 71 JavaScript tests passed.
+See [discovery-evaluation.md](discovery-evaluation.md) for live examples, observed
+limitations, and fixes. Browser checks covered topic selection, university selection,
+publication-backed results, optional author selection, and a verified two-hop path.
