@@ -1,7 +1,8 @@
 # Coauthor Distance: app expansion design
 
 Date: 2026-10-29  
-Status: accepted direction; implementation in progress  
+Status: implemented across three stacked branches; see [completion audit](app-expansion-audit.md)
+
 Scope: evolve the existing author graph and campus explorer into one research discovery app
 
 ## 1. Product direction
@@ -31,6 +32,12 @@ Connections and try the existing example without configuring discovery.
 
 > I arrived knowing my university and an interest. I left with a researcher worth
 > reading about, a relevant publication, and a concrete reason to investigate them.
+
+For example, a student selects their university and a robotics topic, finds a
+researcher through a relevant paper, and saves both with a note. They can then
+open that researcher's network or check a connection to a professor they already
+know. Returning to the shortlist completes the same journey; it does not require
+starting a new graph search.
 
 This is research discovery. The app does not establish whether a researcher is
 recruiting, available to collaborate, or able to provide an introduction.

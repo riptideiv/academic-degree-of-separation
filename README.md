@@ -1,22 +1,24 @@
 # Coauthor Distance
 
-**Research is a small world.** Explore the publications that connect your professor,
-your favorite scientist, and the authors you read. Start with two researchers (or a
-paper), then follow their network using [OpenAlex](https://openalex.org) data.
+**Find people whose work interests you, then understand how they connect.**
+Start with your university and a research topic, paper, or author. Inspect supporting
+publications, explore coauthor connections, and keep a private shortlist with notes.
+Powered by [OpenAlex](https://openalex.org); no sign-up is required.
 
 [Open the tool](https://academic-degree-of-separation.onrender.com/) ·
 [How it works](https://academic-degree-of-separation.onrender.com/guide/) ·
-[Reddit readiness and post draft](docs/reddit-readiness.md)
+[Expansion design](docs/app-expansion-design.md)
 
-Coauthorship is the default. Citations and shared institutions are optional ways to
-explore a broader academic network. Choose your university under **Explore your
-campus** to investigate local researchers connected to the authors you read. Results
-are discovery leads; they do not establish personal relationships or a complete
-ranking of potential collaborators.
+- **Discover:** find researchers at an institution from up to eight explicit topic,
+  paper, or author references. Results carry publication evidence; an optional
+  connection check does not determine whether a match is eligible.
+- **Connections:** explore the existing graph, verified paths, and publication
+  evidence. Coauthorship is the default; citations and institutions are optional.
+  Share starting points, save a graph image, or export a connection report.
+- **Saved:** save researchers and papers with local notes. Export/import JSON to
+  move them between browsers; conflicting notes are previewed before import.
 
-Use **Share map** to copy a link that rebuilds your starting points and search
-options against live data. To keep the current result, use **Save image** or
-**Export report**. No sign-up is required.
+Results are discovery leads, not recruitment claims or an exhaustive ranking.
 
 - **Backend:** FastAPI. Bidirectional BFS over OpenAlex, streamed to the browser via
   Server-Sent Events (SSE).
@@ -42,14 +44,29 @@ uvicorn backend.app:app --reload --port 8000
 open http://127.0.0.1:8000        # macOS  (or just visit the URL)
 ```
 
-Type a researcher's name in the sidebar, choose a result, then add a second one (or
-use the example on the empty canvas). The sidebar shows the **degrees of separation**
-and the connecting steps, while the graph renders their surrounding research network.
-Optionally choose a home institution in **Explore your campus** to discover local
-researchers whose coauthor networks are closest to the researchers in the main graph.
+Open **Discover**, select a reference and university, then choose **Find researchers**.
+Open a result's profile to read recent or most-cited work, save it, or explore its
+network. **Connections** also works independently and includes an example pair.
 
 OpenAlex now requires an API key for normal API use. Keys are free; create an account
 and copy yours from [openalex.org/settings/api](https://openalex.org/settings/api).
+
+## Saved research and sharing
+
+The versioned `coauthor_saved_v1` browser key contains up to 300 researchers/papers,
+6,000 characters per note, and optional public discovery context. Export format:
+`{"version":1,"items":[...]}`. Each item has `id`, `type`, `display_name`, `saved_at`,
+`note`, and optionally `context` (institution and reference IDs). Import validates
+all records before changing state, previews conflicts, and merges by ID. Notes are
+included in exports; unrelated browser state and credentials are excluded. JSON
+imports/exports are limited to 2 MB. Corrupt original storage is preserved for recovery;
+storage failure uses an explicitly labeled in-memory fallback.
+
+Profile links use `/researchers/A…`; discovery links use
+`/discover?institution=I…&ref=T…` (repeat `ref` for other references). Links contain
+public IDs only and rebuild current results. Graph `#map=` links remain compatible.
+Notes and saved lists stay local. Moving hosts/domains requires exporting from the
+old origin and importing on the new one.
 
 ## Configuration
 
@@ -109,13 +126,14 @@ activity in the interactive app, not guide visits or guide-to-app conversions.
 
 ```bash
 pytest -q
+node --test tests/js/*.test.cjs
 ```
 
 The suite mocks all network access (`respx` for HTTP, `AsyncMock`/`ASGITransport` for
 the app), so it's fast and offline.
-When Node.js is available, pytest also runs the dependency-free JavaScript tests
-for browser interactions, request ordering, graph state, and exports; otherwise
-those checks are skipped.
+Pytest wraps some legacy JavaScript regression tests when Node.js is available.
+Run the Node command above for the complete browser-state, discovery, saved-list,
+request-ordering, and export suite.
 GitHub Actions runs the full suite on Python 3.12 and 3.13, plus the JavaScript
 behavior and syntax checks with Node.js 24.
 
@@ -138,6 +156,7 @@ to the same value configured on that server.
 ```
 backend/
   app.py              FastAPI app: search, graph SSE, institution suggestions, cache
+  discovery.py        Institution-scoped topic/publication discovery
   bfs.py              Bidirectional BFS path-finder
   graph_backend.py    OpenAlex graph backend (co-author / citation / institution edges)
   graph_expand.py     Neighborhood expansion (ranked BFS) for the visualization
@@ -153,7 +172,10 @@ backend/
   bigquery_backend.py Optional BigQuery backend (same interface)
   models.py           Pydantic models
 frontend/
-  index.html, app.js, style.css   Cytoscape UI (served as static files)
+  index.html, app.js, style.css   Existing graph UI and application shell
+  app_shell.js, shell.css        Routes, profiles, and shared interface
+  discovery.js, discovery_state.js, discovery_links.js   Discovery inputs/results/sharing
+  saved.js, saved_store.js       Shortlist, notes, validated import/export
   analytics.html      Private usage dashboard; enter the analytics admin token
 scripts/
   bench_search.py     Benchmark harness for /api/graph/expand (cold vs. warm cache)
@@ -170,27 +192,16 @@ tests/                pytest suite
    streamed, so the graph grows during the search. Each connected pair emits a
    `path` event carrying the hop count and the ordered steps as soon as the search
    finishes.
-3. **Explore your campus** (`/api/institution-suggestions`) treats author origins as
-   a research-interest profile. It ranks affiliation candidates at the selected home
-   institution using coauthorship paths only. The UI distinguishes reviewed current
-   affiliations from OpenAlex last-known affiliations; the latter are not claimed as
-   current appointments. Candidate discovery merges reviewed corrections, highly
-   cited authors, exact-topic matches, and a broader subfield lane derived by grouping
-   institution-attributed works. This keeps low-citation but relevant researchers in
-   the bounded pool without scraping search engines or running one request per person.
-   It starts with a publication-evidence-checked two-hop coauthor set-join across the
-   whole pool. If the result page is not full, at most eight topic-first unmatched
-   candidates receive a deeper search under a 12-second request budget.
-   Citations and shared institutions do not affect these suggestions.
-   Candidate membership can include reviewed corrections backed by official university
-   pages, but the request path never performs a web search. Profiles emphasize topics,
-   representative works, OpenAlex/ORCID links, and clickable publication evidence for
-   every displayed coauthor hop. Aggregate/coauthor IDs only propose paths: every hop
-   is re-fetched from an exact work, reviewed identity scopes are enforced, and adjacent
-   works must carry a plausible continuity signal before an intermediate ID is trusted.
-   Coverage messages describe the bounded candidate set
-   and do not claim an exhaustive search of everyone at a university. Adding a suggestion
-   to the graph remains a secondary action.
+3. **Discover** (`/api/discover`) uses explicit topics and topics from selected papers
+   or authors. It samples up to 15 recent works for each of up to eight topics,
+   extracts candidates with authorship evidence at the selected institution, checks
+   last-known/reviewed affiliation and identity scopes, and returns up to 20 people
+   from at most 80 candidates. Ranking uses topic coverage, capped supporting-work
+   counts, and recency, rather than citations or graph distance. Coverage labels
+   disclose bounded or partial results. See [live evaluation](docs/discovery-evaluation.md).
+   Optional `/api/connections/check` verifies a path of up to two coauthor steps
+   between explicitly chosen people. The legacy `/api/institution-suggestions`
+   endpoint retains its verified-path contract for existing clients.
 4. The **frontend** consumes the SSE stream, draws nodes/edges with Cytoscape, and
    lists the degrees of separation + shortest paths in the sidebar. Edge types share
    one color and are distinguished by dash pattern (solid = co-authorship, dashed =

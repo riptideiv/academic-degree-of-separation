@@ -1,5 +1,17 @@
 (function () {
   const API_BASE = window.RESEARCHER_API_BASE ?? '';
+  if (typeof cytoscape === 'undefined') {
+    const area = document.getElementById('graph-area');
+    if (area) {
+      const message = document.createElement('div');
+      message.className = 'graph-unavailable';
+      message.setAttribute('role', 'alert');
+      message.innerHTML = '<h2>Graph could not load</h2><p>Check your connection and reload to try again.</p><button type="button">Reload</button>';
+      message.querySelector('button').onclick = () => location.reload();
+      area.append(message);
+    }
+    return;
+  }
 
   // Persistence is optional: privacy settings or a full storage quota must not
   // prevent someone from searching, choosing an institution, or clearing a graph.
@@ -348,6 +360,9 @@
         `<div>${(data.works_count || 0).toLocaleString()} works · ${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
       ].join('');
     document.getElementById('detail-link').href = `https://openalex.org/${data.id}`;
+    const saveSlot = document.getElementById('detail-save');
+    if (saveSlot) { saveSlot.replaceChildren(); saveSlot.dataset.savePaper = data.id; }
+    window.dispatchEvent(new CustomEvent('research-selection', { detail: data }));
     document.getElementById('node-detail').classList.remove('hidden');
     focusResearcherSearch();
     document.getElementById('node-detail').scrollIntoView({ block: 'nearest' });
@@ -734,7 +749,7 @@
       li.innerHTML =
         `<div class="result-row-main">` +
         info +
-        `<button type="button" class="add-btn-inline">${isRankInstitution || isRankTarget ? 'Select' : 'Add'}</button>` +
+        `<button type="button" class="add-btn-inline">${isRankInstitution || isRankTarget ? 'Select' : 'Add to graph'}</button>` +
         `</div>`;
       li.querySelector('.add-btn-inline').addEventListener('click', e => {
         e.stopPropagation();
@@ -745,8 +760,14 @@
       if (expandable) {
         li.querySelector('.result-row-info').addEventListener('click', () => toggleAuthorExpand(item, li));
       }
+      if (globalThis.ResearchApp && !isRankInstitution && !isRankTarget) {
+        const save = document.createElement('span');
+        save.dataset[isWork ? 'savePaper' : 'saveAuthor'] = item.id;
+        li.querySelector('.result-row-main').append(save);
+      }
       list.appendChild(li);
     }
+    if (globalThis.ResearchApp && !isRankInstitution && !isRankTarget) window.dispatchEvent(new CustomEvent('research-selections', { detail: candidates }));
     renderPagination(data.page, data.total_pages);
   }
 
@@ -2375,6 +2396,7 @@
     add: addResearcher,
     busy: () => state.isLoading,
     resize: () => cy.resize(),
+    dismissSearch: () => { if (!document.getElementById('search-modal').classList.contains('hidden')) closeSearchModal(); },
     origins: () => [...state.origins].map(id => ({ id, display_name: cy.getElementById(id).data('name') || id })),
     institution: () => rankSelection.institution,
     discover: () => runInstitutionRank(true),

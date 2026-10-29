@@ -5,39 +5,39 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Coauthor Distance · How connected is your research world?</title>
-  <meta name="description" content="Find coauthor paths between researchers, explore academic networks, and discover connections at your university with this free OpenAlex-powered tool.">
+  <meta name="description" content="Find researchers at your university through topics and papers, explore coauthor connections, and save a private research shortlist.">
   <link rel="canonical" href="https://academic-degree-of-separation.onrender.com/">
   <meta name="theme-color" content="#243d36">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Coauthor Distance">
-  <meta property="og:title" content="Coauthor Distance — How connected is your research world?">
-  <meta property="og:description" content="Explore coauthor paths and discover researchers at your university through the authors you already read. Free, interactive, and powered by OpenAlex.">
+  <meta property="og:title" content="Coauthor Distance — Find your research people">
+  <meta property="og:description" content="Discover researchers through topics and papers. Explore their connections and keep a local shortlist with notes. Powered by OpenAlex.">
   <meta property="og:url" content="https://academic-degree-of-separation.onrender.com/">
-  <meta property="og:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png?v=20261029-expand-2">
+  <meta property="og:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png?v=20261029-expand-3e">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Coauthor Distance: find the people behind the papers. Illustration of a connected research network.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Coauthor Distance — How connected is your research world?">
-  <meta name="twitter:description" content="Explore coauthor paths and discover researchers at your university through the authors you already read.">
-  <meta name="twitter:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png?v=20261029-expand-2">
+  <meta name="twitter:title" content="Coauthor Distance — Find your research people">
+  <meta name="twitter:description" content="Discover researchers through topics and papers, explore connections, and save useful research.">
+  <meta name="twitter:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png?v=20261029-expand-3e">
   <meta name="twitter:image:alt" content="Coauthor Distance: find the people behind the papers. Illustration of a connected research network.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=20261029-expand-2">
-  <link rel="stylesheet" href="/workspace.css?v=20261029-expand-2">
-  <link rel="stylesheet" href="/shell.css?v=20261029-expand-2">
+  <link rel="stylesheet" href="/style.css?v=20261029-expand-3e">
+  <link rel="stylesheet" href="/workspace.css?v=20261029-expand-3e">
+  <link rel="stylesheet" href="/shell.css?v=20261029-expand-3e">
   <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@type": "WebApplication",
       "name": "Coauthor Distance",
       "url": "https://academic-degree-of-separation.onrender.com/",
-      "description": "Explore connections between researchers through co-authorship, citations, and shared institutions using OpenAlex data.",
+      "description": "Discover researchers at a university from topics and papers, explore academic connections, and save a local shortlist using OpenAlex data.",
       "applicationCategory": "EducationalApplication",
       "operatingSystem": "Any",
       "browserRequirements": "Requires JavaScript and a modern web browser",
       "isAccessibleForFree": true,
-      "featureList": ["Coauthor connection paths", "Interactive research networks", "Institution Explorer", "Graph image and connection report exports"]
+      "featureList": ["Topic and paper based researcher discovery", "Shared researcher profiles", "Coauthor connection paths", "Private local shortlist and notes", "Saved research import and export", "Graph image and connection report exports"]
     }
   </script>
   <script defer src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
@@ -55,7 +55,7 @@
     <a class="app-about" href="/guide/">About</a>
   </header>
   <p id="app-notice" role="status"></p>
-  <div id="app-share-fallback" hidden><label for="app-share-link">Copy this link</label><input id="app-share-link" readonly><button type="button" onclick="this.parentElement.hidden=true">Close</button></div>
+  <div id="app-share-fallback" hidden><label for="app-share-link">Copy this link</label><input id="app-share-link" readonly><button type="button" id="app-share-close">Close</button></div>
   <main id="app-main">
     <section id="discover-view" class="content-view" aria-labelledby="discover-heading">
       <h1 id="discover-heading" tabindex="-1">Find your research people.</h1>
@@ -197,6 +197,7 @@
       <div id="detail-meta"></div>
       <p class="settings-help">OpenAlex affiliations may be incomplete or outdated.</p>
       <a id="detail-link" href="#" target="_blank" rel="noopener">View on OpenAlex →</a>
+      <span id="detail-save"></span>
       <button id="detail-add" type="button" class="smooth-button">Use as a starting point</button>
     </div>
 
@@ -276,13 +277,16 @@
     <button id="view-menu" type="button" aria-pressed="false">Search &amp; tools</button>
   </div>
 
-  <script defer src="/graph_links.js?v=20261029-expand-2"></script>
-  <script defer src="/research_export.js?v=20261029-expand-2"></script>
+  <script defer src="/graph_links.js?v=20261029-expand-3e"></script>
+  <script defer src="/research_export.js?v=20261029-expand-3e"></script>
   <script defer src="/usage_analytics.js?v=20260926-1"></script>
-  <script defer src="/discovery_state.js?v=20261029-expand-2"></script>
-  <script defer src="/app_shell.js?v=20261029-expand-2"></script>
-  <script defer src="/discovery.js?v=20261029-expand-2"></script>
-  <script defer src="/app.js?v=20261029-expand-2"></script>
+  <script defer src="/discovery_state.js?v=20261029-expand-3e"></script>
+  <script defer src="/discovery_links.js?v=20261029-expand-3e"></script>
+  <script defer src="/saved_store.js?v=20261029-expand-3e"></script>
+  <script defer src="/app_shell.js?v=20261029-expand-3e"></script>
+  <script defer src="/discovery.js?v=20261029-expand-3e"></script>
+  <script defer src="/saved.js?v=20261029-expand-3e"></script>
+  <script defer src="/app.js?v=20261029-expand-3e"></script>
 </body>
 
 </html>

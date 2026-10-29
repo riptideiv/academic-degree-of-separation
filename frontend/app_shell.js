@@ -12,12 +12,16 @@
   let route = '';
   let profileRequest = 0;
   let profileController = null;
+  let papersController = null;
+  let papersGeneration = 0;
   let searchController = null;
   let searchGeneration = 0;
   let profileContext = null;
   const scrolls = new Map();
   const focusTargets = new Map();
   let currentProfile = null;
+  let currentPapers = [];
+  let shareReturnFocus = null;
 
   async function request(path, options = {}) {
     const response = await fetch(API + path, options);
@@ -41,7 +45,7 @@
     }
   }
   function addReference(item) {
-    try { intent.add(item); rememberReferences(); renderReferences(); searchGeneration++; searchController?.abort(); $('reference-results').replaceChildren(); $('reference-query').value = ''; notice('Reference added. Search to update results.'); window.dispatchEvent(new Event('discovery-input')); }
+    try { intent.add({ id: item.id, display_name: String(item.display_name || item.id).slice(0, 300) }); rememberReferences(); renderReferences(); searchGeneration++; searchController?.abort(); $('reference-results').replaceChildren(); $('reference-query').value = ''; notice('Reference added. Search to update results.'); window.dispatchEvent(new Event('discovery-input')); }
     catch (error) { notice(error.message); }
   }
   function pathView(path) {
@@ -59,11 +63,12 @@
   }
   function renderRoute(focus = false) {
     const previous = route;
-    route = window.location.pathname;
-    const view = pathView(route);
+    route = window.location.pathname + window.location.search;
+    const view = pathView(window.location.pathname);
+    if (view !== 'connections') graph?.dismissSearch?.();
     document.body.dataset.view = view;
     $('use-graph-references').hidden = !(graph?.origins() || []).some(item => item.id.startsWith('A'));
-    if (previous && previous !== route) notice('');
+    if (previous && previous !== route) { notice(''); $('app-share-fallback').hidden = true; }
     for (const name of ['discover', 'connections', 'saved', 'profile']) {
       const el = $(name + '-view');
       el.hidden = name !== view;
@@ -76,8 +81,8 @@
     document.title = `${({ discover: 'Discover researchers', connections: 'Connections', saved: 'Saved', profile: 'Researcher' })[view]} · Coauthor Distance`;
     $('app-main').scrollTop = scrolls.get(route) || 0;
     if (view === 'connections') requestAnimationFrame(() => graph?.resize());
-    if (view === 'profile') { if (previous !== route || !currentProfile) loadProfile(route.split('/').pop()); }
-    else { profileRequest += 1; profileController?.abort(); }
+    if (view === 'profile') { if (previous !== route || !currentProfile) loadProfile(window.location.pathname.split('/').pop()); }
+    else { profileRequest += 1; profileController?.abort(); papersController?.abort(); }
     if (focus) $(view + '-heading')?.focus({ preventScroll: true });
     else if (focusTargets.get(route)?.isConnected) focusTargets.get(route).focus({ preventScroll: true });
     window.dispatchEvent(new CustomEvent('research-route', { detail: { view, path: route } }));
@@ -91,6 +96,8 @@
     profileController?.abort();
     profileController = new AbortController();
     currentProfile = null;
+    currentPapers = [];
+    papersController?.abort();
     $('profile-heading').textContent = 'Loading researcher…';
     $('profile-body').replaceChildren();
     const controller = profileController;
@@ -101,16 +108,17 @@
       currentProfile = profile;
       $('profile-heading').textContent = profile.display_name;
       document.title = `${profile.display_name} · Coauthor Distance`;
-      const evidence = profile.affiliation_evidence;
-      const institution = evidence?.display_name || profile.institution || 'Affiliation not listed';
-      const source = safeURL(evidence?.source_url || evidence?.openalex_url);
+      const affiliations = profile.affiliations?.length ? profile.affiliations : [profile.affiliation_evidence].filter(Boolean);
+      const affiliationHTML = affiliations.length ? `<p class="evidence-label">${affiliations.every(e => e.verified_current) ? 'Current affiliation verified' : 'OpenAlex last-known affiliations'}</p>` + affiliations.map(evidence => {
+        const source = safeURL(evidence.source_url || evidence.openalex_url), name = esc(evidence.display_name || profile.institution);
+        return `<p class="profile-affiliation">${source ? `<a href="${esc(source)}" target="_blank" rel="noopener">${name}</a>` : name}</p>`;
+      }).join('') : '<p class="profile-affiliation">Affiliation not listed</p>';
       const orcid = safeURL(profile.orcid);
-      $('profile-body').innerHTML = `<p class="profile-affiliation">${esc(institution)}</p>
-        <p class="evidence-label">${evidence?.verified_current ? 'Current affiliation verified' : 'OpenAlex last-known affiliation'}${source ? ` · <a href="${esc(source)}" target="_blank" rel="noopener">Source</a>` : ''}</p>
+      $('profile-body').innerHTML = `<div class="profile-affiliations">${affiliationHTML}</div>
         <div class="topic-list">${(profile.topics || []).map(t => `<span>${esc(t.display_name)}</span>`).join('')}</div>
         <div class="profile-actions"><button id="profile-explore" type="button">Explore connections</button><button id="profile-related" type="button">Find related researchers</button><span id="profile-save-slot"></span></div>
         <div class="source-links"><a href="https://openalex.org/${esc(id)}" target="_blank" rel="noopener">OpenAlex ↗</a>${orcid ? `<a href="${esc(orcid)}" target="_blank" rel="noopener">ORCID ↗</a>` : ''}<button type="button" id="profile-share">Share profile</button></div>
-        <section id="profile-context"></section><section><h2>Publications</h2><div id="profile-papers" aria-live="polite">Loading publications…</div></section>`;
+        <section id="profile-context"></section><section><h2>Publications</h2><label for="profile-paper-sort">Order <select id="profile-paper-sort"><option value="recent">Recent</option><option value="cited">Most cited</option></select></label><div id="profile-papers" aria-live="polite">Loading publications…</div></section>`;
       $('profile-explore').onclick = () => explore(profile);
       $('profile-related').onclick = () => { addReference(profile); navigate('/discover'); };
       $('profile-share').onclick = () => share(location.origin + '/researchers/' + id);
@@ -121,6 +129,7 @@
         $('profile-context').innerHTML = '<h2>Connection evidence</h2>' + evidenceHTML(profileContext.steps);
       }
       window.dispatchEvent(new CustomEvent('research-profile', { detail: profile }));
+      $('profile-paper-sort').onchange = () => loadPapers(id, version);
       await loadPapers(id, version);
     } catch (error) {
       if (version !== profileRequest) return;
@@ -136,16 +145,21 @@
     }).join('')}</ol>`;
   }
   async function loadPapers(id, version) {
+    papersController?.abort();
+    const abort = papersController = new AbortController(), generation = ++papersGeneration;
+    const timeout = setTimeout(() => abort.abort(), 15000);
+    $('profile-papers').textContent = 'Loading publications…';
     try {
-      const papers = await request('/api/authors/' + id + '/works?limit=10', { signal: profileController.signal });
-      if (version !== profileRequest) return;
+      const papers = await request('/api/authors/' + id + '/works?' + new URLSearchParams({ limit: '10', sort: $('profile-paper-sort').value }), { signal: abort.signal });
+      if (version !== profileRequest || generation !== papersGeneration) return;
+      currentPapers = papers;
       $('profile-papers').innerHTML = papers.length ? `<ul class="publication-list">${papers.map(p => `<li><a href="${esc(safeURL(p.doi) || 'https://openalex.org/' + p.id)}" target="_blank" rel="noopener">${esc(p.title)}</a><span class="publication-year">${esc(p.publication_year || '')}</span><span data-save-paper="${esc(p.id)}"></span></li>`).join('')}</ul>` : '<p>No publications listed.</p>';
       window.dispatchEvent(new CustomEvent('research-papers', { detail: papers }));
     } catch (error) {
-      if (version !== profileRequest) return;
+      if (version !== profileRequest || generation !== papersGeneration) return;
       $('profile-papers').innerHTML = `<p>${esc(error.name === 'AbortError' ? 'Publication request timed out.' : error.message)}</p><button type="button" id="papers-retry">Retry publications</button>`;
-      $('papers-retry').onclick = () => loadProfile(id);
-    }
+      $('papers-retry').onclick = () => loadPapers(id, version);
+    } finally { clearTimeout(timeout); }
   }
   async function explore(profile) {
     if (!graph) { notice('The graph is still loading. Try again shortly.'); return; }
@@ -154,6 +168,7 @@
     await graph.add(profile);
   }
   async function share(url) {
+    shareReturnFocus = document.activeElement;
     try { await navigator.clipboard.writeText(url); notice('Link copied.'); }
     catch { $('app-share-link').value = url; $('app-share-fallback').hidden = false; $('app-share-link').focus(); $('app-share-link').select(); }
   }
@@ -187,6 +202,9 @@
       if (generation === searchGeneration) $('reference-results').innerHTML = `<li role="alert">${esc(error.name === 'AbortError' ? 'Search timed out. Try again.' : error.message)}</li>`;
     } finally { clearTimeout(timeout); }
   }
+  function closeShare() { $('app-share-fallback').hidden = true; shareReturnFocus?.focus(); }
+  $('app-share-close').onclick = closeShare;
+  $('app-share-fallback').addEventListener('keydown', event => { if (event.key === 'Escape') closeShare(); });
   $('reference-form').addEventListener('submit', searchReferences);
   $('reference-kind').addEventListener('change', () => {
     searchGeneration++; searchController?.abort(); $('reference-results').replaceChildren();
@@ -203,9 +221,10 @@
     if (link.dataset.researcher) openProfile(link.dataset.researcher); else navigate(link.getAttribute('href'));
   });
   window.addEventListener('popstate', () => { scrolls.set(route, $('app-main').scrollTop); profileContext = null; renderRoute(); });
-  window.ResearchApp = { references: intent.list, intent, addReference, openProfile, navigate, explore, request, share, notice, esc, safeURL, evidenceHTML,
-    profile: () => currentProfile, graph: () => graph,
-    graphReady(value) { graph = value; requestAnimationFrame(() => { $('use-graph-references').hidden = !graph.origins().some(item => item.id.startsWith('A')); if (pathView(route) === 'connections') graph.resize(); }); },
+  window.ResearchApp = { references: intent.list, intent, addReference,
+    replaceReferences(values) { intent.replace(values.map(value => ({ id: value.id, display_name: String(value.display_name || value.id).slice(0, 300) }))); rememberReferences(); renderReferences(); }, openProfile, navigate, explore, request, share, notice, esc, safeURL, evidenceHTML,
+    profile: () => currentProfile, papers: () => currentPapers.slice(), graph: () => graph,
+    graphReady(value) { graph = value; requestAnimationFrame(() => { $('use-graph-references').hidden = !graph.origins().some(item => item.id.startsWith('A')); if (pathView(window.location.pathname) === 'connections') graph.resize(); }); },
   };
   if (location.hash.startsWith('#map=')) history.replaceState(null, '', '/connections' + location.hash);
   renderReferences();

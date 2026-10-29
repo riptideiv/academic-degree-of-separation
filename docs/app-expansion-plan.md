@@ -2,13 +2,13 @@
 
 Date: 2026-10-29
 Design: [app-expansion-design.md](app-expansion-design.md)
-Status: in progress
+Status: implementation complete; three stacked pull requests published
 
 ## Branch stack
 
-1. `codex/expansion-phase-1` from `origin/master`: navigation, independent discovery references, shared researcher profiles, graph integration, and legacy-link compatibility.
-2. `codex/expansion-phase-2` from phase 1: topic and paper inputs, institution-scoped publication-backed discovery, optional connection checks, relevance evaluation.
-3. `codex/expansion-phase-3` from phase 2: saved researchers/papers, notes, safe import/export, sharing, documentation, and complete journey validation.
+1. [PR #15](https://github.com/riptideiv/coauthor-distance/pull/15): `codex/expansion-phase-1` from `origin/master`: navigation, independent discovery references, shared researcher profiles, graph integration, and legacy-link compatibility.
+2. [PR #16](https://github.com/riptideiv/coauthor-distance/pull/16): `codex/expansion-phase-2` from phase 1: topic and paper inputs, institution-scoped publication-backed discovery, optional connection checks, relevance evaluation.
+3. [PR #17](https://github.com/riptideiv/coauthor-distance/pull/17): `codex/expansion-phase-3` from phase 2: saved researchers/papers, notes, safe import/export, sharing, documentation, and complete journey validation.
 
 Each branch receives its own commits and stacked pull request. Do not squash or merge the lower branches while the stack is under construction. Preserve the existing graph backend and its verified-path endpoint.
 
@@ -33,12 +33,12 @@ Each branch receives its own commits and stacked pull request. Do not squash or 
 
 ### Phase 3
 
-- [ ] One local shortlist supports researchers and papers, deduplication, and notes.
-- [ ] Storage failure, malformed imports, duplicate note conflicts, and exports handled safely.
-- [ ] Sharing excludes personal state and restores public discovery inputs.
-- [ ] Guide and public metadata reflect the finished product.
-- [ ] Full backend/JS suites and desktop/mobile journey checks pass.
-- [ ] Final requirement-by-requirement audit recorded with concrete evidence.
+- [x] One local shortlist supports researchers and papers, deduplication, and notes.
+- [x] Storage failure, malformed imports, duplicate note conflicts, and exports handled safely.
+- [x] Sharing excludes personal state and restores public discovery inputs.
+- [x] Guide and public metadata reflect the finished product.
+- [x] Full backend/JS suites and desktop/mobile journey checks pass.
+- [x] Final requirement-by-requirement audit recorded with concrete evidence.
 
 ## Constraints
 
@@ -50,7 +50,7 @@ must disable analytics and remote persistent-store connections.
 
 ## Phase 1 evidence
 
-339 pytest tests passed (3 optional skips); 68 JavaScript tests passed.
+339 pytest tests passed (3 legacy skips); 68 JavaScript tests passed.
 Live local checks covered researcher search, a directly opened Hinton profile,
 publication loading, profile-to-graph navigation, graph completion, and returning
 to the unchanged reference selection. Narrow-mobile and desktop layouts inspected.
@@ -58,7 +58,16 @@ The Saved destination is an intermediate shell until phase 3.
 
 ## Phase 2 evidence
 
-356 pytest tests passed (3 optional skips); 71 JavaScript tests passed.
+356 pytest tests passed (3 legacy skips); 71 JavaScript tests passed.
 See [discovery-evaluation.md](discovery-evaluation.md) for live examples, observed
 limitations, and fixes. Browser checks covered topic selection, university selection,
 publication-backed results, optional author selection, and a verified two-hop path.
+
+## Phase 3 evidence
+
+359 pytest tests passed (3 legacy skips); 83 JavaScript tests passed. Live browser
+checks covered notes across reload, saved researchers/papers, real export/import
+with a conflicting note, undo, public sharing, result scroll/focus restoration,
+legacy graph links, and a live Hinton–Bengio graph. See
+[the completion audit](app-expansion-audit.md) for requirement-level evidence and
+explicit deployment/product-validation follow-ups.

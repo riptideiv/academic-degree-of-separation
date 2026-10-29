@@ -7,6 +7,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -2024,9 +2025,12 @@ async def researcher_profile(author_id: str):
         "display_name": author.get("display_name") or author_id,
         "institution": _get_inst(author),
         "affiliation_evidence": _affiliation_evidence(author, institution_id) if institution_id else None,
+        "affiliations": [_affiliation_evidence(author, inst_id) for inst_id in (
+            [override.institution_id] if override else list(dict.fromkeys(_short_id(inst["id"]) for inst in institutions))[:8]
+        )],
         "orcid": author.get("orcid"),
         "topics": [
-            {"id": _short_id(topic.get("id", "")),
+            {"id": _short_id(topic.get("id") or ""),
              "display_name": topic.get("display_name") or topic.get("name", "")}
             for topic in (author.get("topics") or [])[:8] if isinstance(topic, dict)
         ],
@@ -2035,11 +2039,11 @@ async def researcher_profile(author_id: str):
 
 
 @app.get("/api/authors/{author_id}/works", response_model=list[AuthorWork])
-async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge=1, le=25)):
+async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge=1, le=25), sort: Literal["cited", "recent"] = "cited"):
     author_id = _validate_id(author_id, "A")
     verified_work_ids = get_verified_work_ids(author_id)
     if verified_work_ids is None:
-        works = await _client.get_author_works(author_id, limit=limit)
+        works = await _client.get_author_works(author_id, limit=limit, **({"sort": "recent"} if sort == "recent" else {}))
     else:
         works = [
             work
@@ -2060,8 +2064,8 @@ async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge
         ]
         works.sort(
             key=lambda work: (
-                -int(work.get("cited_by_count", 0)),
-                -(work.get("publication_year") or 0),
+                -(work.get("publication_year") or 0) if sort == "recent" else -int(work.get("cited_by_count", 0)),
+                -int(work.get("cited_by_count", 0)) if sort == "recent" else -(work.get("publication_year") or 0),
                 _short_id(work.get("id", "")),
             )
         )
