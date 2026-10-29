@@ -2,13 +2,13 @@
 
 Date: 2026-10-29
 Design: [app-expansion-design.md](app-expansion-design.md)
-Status: implementation complete; publishing the three-PR stack
+Status: implementation complete; three stacked pull requests published
 
 ## Branch stack
 
-1. `codex/expansion-phase-1` from `origin/master`: navigation, independent discovery references, shared researcher profiles, graph integration, and legacy-link compatibility.
-2. `codex/expansion-phase-2` from phase 1: topic and paper inputs, institution-scoped publication-backed discovery, optional connection checks, relevance evaluation.
-3. `codex/expansion-phase-3` from phase 2: saved researchers/papers, notes, safe import/export, sharing, documentation, and complete journey validation.
+1. [PR #15](https://github.com/riptideiv/coauthor-distance/pull/15): `codex/expansion-phase-1` from `origin/master`: navigation, independent discovery references, shared researcher profiles, graph integration, and legacy-link compatibility.
+2. [PR #16](https://github.com/riptideiv/coauthor-distance/pull/16): `codex/expansion-phase-2` from phase 1: topic and paper inputs, institution-scoped publication-backed discovery, optional connection checks, relevance evaluation.
+3. [PR #17](https://github.com/riptideiv/coauthor-distance/pull/17): `codex/expansion-phase-3` from phase 2: saved researchers/papers, notes, safe import/export, sharing, documentation, and complete journey validation.
 
 Each branch receives its own commits and stacked pull request. Do not squash or merge the lower branches while the stack is under construction. Preserve the existing graph backend and its verified-path endpoint.
 
