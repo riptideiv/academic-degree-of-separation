@@ -36,12 +36,12 @@
     for (const item of intent.list()) {
       const chip = document.createElement('li');
       chip.innerHTML = `<span>${esc(item.display_name)}</span><button type="button" aria-label="Remove ${esc(item.display_name)}">×</button>`;
-      chip.querySelector('button').onclick = () => { intent.remove(item.id); rememberReferences(); renderReferences(); notice('References changed. Search to update results.'); };
+      chip.querySelector('button').onclick = () => { intent.remove(item.id); rememberReferences(); renderReferences(); notice('References changed. Search to update results.'); window.dispatchEvent(new Event('discovery-input')); };
       $('discovery-references').append(chip);
     }
   }
   function addReference(item) {
-    try { intent.add(item); rememberReferences(); renderReferences(); searchGeneration++; searchController?.abort(); $('reference-results').replaceChildren(); $('reference-query').value = ''; notice('Reference added. Search to update results.'); }
+    try { intent.add(item); rememberReferences(); renderReferences(); searchGeneration++; searchController?.abort(); $('reference-results').replaceChildren(); $('reference-query').value = ''; notice('Reference added. Search to update results.'); window.dispatchEvent(new Event('discovery-input')); }
     catch (error) { notice(error.message); }
   }
   function pathView(path) {
@@ -114,6 +114,9 @@
       $('profile-explore').onclick = () => explore(profile);
       $('profile-related').onclick = () => { addReference(profile); navigate('/discover'); };
       $('profile-share').onclick = () => share(location.origin + '/researchers/' + id);
+      if (profileContext?.matching_topics?.length) {
+        $('profile-context').innerHTML = '<h2>Why this researcher appeared</h2><p>' + profileContext.matching_topics.map(t => esc(t.display_name)).join(' · ') + '</p><ul class="publication-list">' + (profileContext.works || []).map(p => `<li><a href="https://openalex.org/${esc(p.id)}" target="_blank" rel="noopener">${esc(p.title)}</a> ${esc(p.publication_year || '')}</li>`).join('') + '</ul>';
+      }
       if (profileContext?.steps?.length) {
         $('profile-context').innerHTML = '<h2>Connection evidence</h2>' + evidenceHTML(profileContext.steps);
       }
@@ -165,13 +168,18 @@
     const controller = searchController;
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const data = await request('/api/authors?' + new URLSearchParams({ q: query, per_page: '8' }), { signal: searchController.signal });
+      const kind = $('reference-kind').value;
+      const data = await request('/api/' + kind + '?' + new URLSearchParams({ q: query, per_page: '8' }), { signal: searchController.signal });
       if (generation !== searchGeneration) return;
       $('reference-results').replaceChildren();
       for (const item of data.results) {
         const row = document.createElement('li');
-        row.innerHTML = `<div><a href="/researchers/${esc(item.id)}" data-researcher="${esc(item.id)}">${esc(item.display_name)}</a><p>${esc(item.institution || '')}</p></div><button type="button">Use researcher</button>`;
-        row.querySelector('button').onclick = () => { addReference(item); $('reference-results').replaceChildren(); $('reference-query').value = ''; $('reference-query').focus(); };
+        const name = item.display_name || item.title;
+        const label = kind === 'topics' ? 'topic' : kind === 'works' ? 'paper' : 'researcher';
+        const title = kind === 'authors' ? `<a href="/researchers/${esc(item.id)}" data-researcher="${esc(item.id)}">${esc(name)}</a>` : `<strong>${esc(name)}</strong>`;
+        const detail = kind === 'topics' ? [item.subfield?.display_name, item.field?.display_name].filter(Boolean).join(' · ') : kind === 'works' ? [item.publication_year, ...(item.author_names || []).slice(0, 3)].filter(Boolean).join(' · ') : item.institution;
+        row.innerHTML = `<div>${title}<p>${esc(detail || '')}</p></div><button type="button">Use ${label}</button>`;
+        row.querySelector('button').onclick = () => { addReference({ id: item.id, display_name: name }); $('reference-query').focus(); };
         $('reference-results').append(row);
       }
       if (!data.results.length) $('reference-results').innerHTML = `<li>${esc(data.message || 'No matches. Try another name.')}</li>`;
@@ -180,11 +188,13 @@
     } finally { clearTimeout(timeout); }
   }
   $('reference-form').addEventListener('submit', searchReferences);
+  $('reference-kind').addEventListener('change', () => {
+    searchGeneration++; searchController?.abort(); $('reference-results').replaceChildren();
+    $('reference-query').placeholder = ({ topics: 'Search a topic, e.g. robotics', works: 'Search a paper title', authors: 'Search a researcher' })[$('reference-kind').value];
+    $('reference-query').focus();
+  });
   $('reference-query').addEventListener('input', () => { searchGeneration++; searchController?.abort(); $('reference-results').replaceChildren(); });
   $('use-graph-references').onclick = () => { for (const item of graph?.origins() || []) if (item.id.startsWith('A')) addReference(item); };
-  $('discovery-submit').onclick = () => {
-    try { intent.submit(graph?.institution()); graph?.discover(); } catch (error) { notice(error.message); }
-  };
   $('profile-back').onclick = () => { if (history.state?.appNavigation) history.back(); else navigate('/discover', { replace: true }); };
   document.addEventListener('click', event => {
     const link = event.target.closest('a[data-nav], a[data-researcher]');
@@ -195,7 +205,7 @@
   window.addEventListener('popstate', () => { scrolls.set(route, $('app-main').scrollTop); profileContext = null; renderRoute(); });
   window.ResearchApp = { references: intent.list, intent, addReference, openProfile, navigate, explore, request, share, notice, esc, safeURL, evidenceHTML,
     profile: () => currentProfile, graph: () => graph,
-    graphReady(value) { graph = value; if (pathView(route) === 'connections') requestAnimationFrame(() => graph.resize()); },
+    graphReady(value) { graph = value; requestAnimationFrame(() => { $('use-graph-references').hidden = !graph.origins().some(item => item.id.startsWith('A')); if (pathView(route) === 'connections') graph.resize(); }); },
   };
   if (location.hash.startsWith('#map=')) history.replaceState(null, '', '/connections' + location.hash);
   renderReferences();

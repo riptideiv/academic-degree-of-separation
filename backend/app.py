@@ -29,6 +29,7 @@ from backend.affiliation_overrides import (
 )
 from backend.analytics_routes import create_analytics_router
 from backend.bfs import find_path
+from backend.discovery import discover
 from backend.graph_backend import (
     ALL_EDGE_TYPES,
     ALL_WORK_EDGE_TYPES,
@@ -1264,6 +1265,47 @@ async def search_institutions(
     }
 
 
+@app.get("/api/topics")
+async def search_topics(q: str = Query(..., min_length=2, max_length=300)):
+    results, total = await _client.search_topics(q)
+    return {"results": results, "total": total}
+
+
+@app.get("/api/discover")
+async def discover_researchers(
+    institution_id: str,
+    reference_ids: list[str] = Query(...),
+):
+    institution_id = _validate_id(institution_id, "I")
+    references = _validate_ids(reference_ids, 8, "AWT")
+    if not references:
+        raise HTTPException(status_code=422, detail="Choose at least one reference.")
+    try:
+        async with asyncio.timeout(25):
+            return await discover(_client, institution_id, references)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Discovery timed out. Try fewer references or retry.") from None
+
+
+@app.get("/api/connections/check")
+async def check_connection(from_id: str, to_id: str):
+    """Optional, evidence-verified two-hop lookup; independent of discovery rank."""
+    from_id, to_id = _validate_id(from_id, "A"), _validate_id(to_id, "A")
+    if from_id == to_id:
+        raise HTTPException(status_code=422, detail="Choose two different researchers.")
+    try:
+        async with asyncio.timeout(25):
+            candidate = apply_reviewed_identity(await _client.get_author(to_id))
+            paths, errors, complete = await _short_coauthor_paths([candidate], [from_id], 2)
+            path = paths.get(to_id)
+            if path:
+                return {"status": "verified", "max_hops": 2, **path}
+            return {"status": "not_found" if complete and not errors else "incomplete",
+                    "max_hops": 2, "steps": []}
+    except TimeoutError:
+        return {"status": "incomplete", "max_hops": 2, "steps": []}
+
+
 @app.get("/api/institution-suggestions")
 async def institution_rank(
     institution: str | None = Query(default=None, min_length=2, max_length=300),
@@ -1972,7 +2014,8 @@ async def researcher_profile(author_id: str):
     author_id = _validate_id(author_id, "A")
     author = apply_reviewed_identity(await _client.get_author(author_id))
     override = author.get("_affiliation_override")
-    institutions = author.get("last_known_institutions") or []
+    institutions = [item for item in (author.get("last_known_institutions") or [])
+                    if isinstance(item, dict) and item.get("id")]
     institution_id = override.institution_id if override else (
         _short_id(institutions[0]["id"]) if institutions else None
     )

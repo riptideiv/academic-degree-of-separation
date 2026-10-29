@@ -406,7 +406,7 @@ class OpenAlexClient:
             self._search_cache.move_to_end(key)
         return hit
 
-    def _put_search_cache(self, key: tuple, value: tuple[list, int]) -> None:
+    def _put_search_cache(self, key: tuple, value: tuple[list, int] | dict) -> None:
         self._search_cache[key] = value
         self._search_cache.move_to_end(key)
         while len(self._search_cache) > self._search_cache_max:
@@ -937,6 +937,41 @@ class OpenAlexClient:
 
     async def get_work(self, work_id: str) -> dict:
         return await self._get(f"{API_BASE}/works/{work_id}", {})
+
+    async def search_topics(self, query: str) -> tuple[list[dict], int]:
+        key = ("topics", query.casefold())
+        cached = self._get_search_cache(key)
+        if cached is not None:
+            return cached
+        data = await self._get(f"{API_BASE}/topics", {
+            "search": query, "per_page": 10,
+            "select": "id,display_name,description,subfield,field,domain",
+        }, max_attempts=1)
+        result = ([{**item, "id": _short_id(item["id"])} for item in data.get("results", [])],
+                  data.get("meta", {}).get("count", 0))
+        self._put_search_cache(key, result)
+        return result
+
+    async def get_topic(self, topic_id: str) -> dict:
+        return await self._get(f"{API_BASE}/topics/{topic_id}", {}, max_attempts=1)
+
+    async def get_institution(self, institution_id: str) -> dict:
+        return await self._get(f"{API_BASE}/institutions/{institution_id}", {}, max_attempts=1)
+
+    async def get_discovery_works(self, institution_id: str, topic_id: str) -> dict:
+        """A bounded recent-publication lane, without citation-count ranking."""
+        key = ("discovery-works", institution_id, topic_id)
+        cached = self._get_search_cache(key)
+        if cached is not None:
+            return cached
+        data = await self._get(f"{API_BASE}/works", {
+            "filter": (f"authorships.institutions.id:{institution_id},topics.id:{topic_id},is_retracted:false,"
+                       "type:article|preprint|review|book-chapter|book|dissertation"),
+            "sort": "publication_date:desc", "per_page": 15,
+            "select": "id,title,publication_year,doi,authorships,topics,is_authors_truncated",
+        }, max_attempts=1)
+        self._put_search_cache(key, data)
+        return data
 
     async def search_works(
         self, query: str, page: int = 1, per_page: int = 20
