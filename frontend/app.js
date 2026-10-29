@@ -2054,7 +2054,7 @@
     if (state.isLoading || !cy.nodes().length) return;
     const origins = [...state.origins].map(id => ({ id, name: cy.getElementById(id).data('name') || id }));
     const report = window.ResearchExport.report({ origins, paths: [...state.paths.values()] });
-    downloadBlob(new Blob([report], { type: 'text/markdown;charset=utf-8' }), 'coauthor-atlas-connections.md');
+    downloadBlob(new Blob([report], { type: 'text/markdown;charset=utf-8' }), 'coauthor-distance-connections.md');
     document.getElementById('export-status').textContent = 'Connection report downloaded.';
   });
 
@@ -2066,7 +2066,7 @@
     status.textContent = 'Preparing image…';
     try {
       const blob = await cy.png({ output: 'blob-promise', full: true, bg: '#fafafa', maxWidth: 2400, maxHeight: 1800 });
-      downloadBlob(blob, 'coauthor-atlas-map.png');
+      downloadBlob(blob, 'coauthor-distance-map.png');
       status.textContent = 'Graph image downloaded.';
     } catch {
       status.textContent = 'Could not save the image. Try again with a smaller graph.';

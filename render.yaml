@@ -1,5 +1,6 @@
 services:
   - type: web
+    # Existing Render service identity; independent of the app and repository name.
     name: researchers-degree-of-separation
     runtime: python
     buildCommand: pip install -r requirements.txt

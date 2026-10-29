@@ -1,4 +1,4 @@
-# Coauthor Atlas
+# Coauthor Distance
 
 **Research is a small world.** Explore the publications that connect your professor,
 your favorite scientist, and the authors you read. Start with two researchers (or a
@@ -26,6 +26,10 @@ options against live data. To keep the current result, use **Save image** or
 ## Quick start
 
 ```bash
+# Clone the repository
+git clone https://github.com/riptideiv/coauthor-distance.git
+cd coauthor-distance
+
 # 1. Create a virtualenv and install dependencies
 python3 -m venv .venv
 source .venv/bin/activate
@@ -93,12 +97,9 @@ under a new public hostname, update the URLs together in `frontend/index.html`,
 `frontend/social-preview.svg` is the editable source for the 1200 × 630 PNG used
 by social previews; regenerate the PNG when changing the artwork.
 
-The separate introduction at `www.xingruic.net/tools/researchers` embeds this app
-and is outside this repository. It already has its own canonical and social
-metadata. Its owner should add visible use-case copy and a normal link to the
-guide outside the iframe; embedded app metadata does not replace the outer page's
-metadata. The two hosts currently retain their own canonicals. If consolidating
-the landing page onto one domain later, align content and redirects deliberately.
+The legacy link at `www.xingruic.net/tools/researchers` redirects to the Render
+deployment. That redirect is configured outside this repository. When connecting
+a new public domain, update that redirect and the GitHub repository homepage too.
 
 Publishing a sitemap does not itself submit it to Search
 Console or guarantee indexing. The guide is untracked; existing analytics count
