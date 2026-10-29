@@ -18,7 +18,7 @@ load_dotenv(Path(__file__).parent.parent / ".env.local", override=False)
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.affiliation_overrides import (
@@ -1966,6 +1966,31 @@ async def _institution_rank(
     return response
 
 
+@app.get("/api/researchers/{author_id}")
+async def researcher_profile(author_id: str):
+    """One identity record shared by discovery, graph, and saved profiles."""
+    author_id = _validate_id(author_id, "A")
+    author = apply_reviewed_identity(await _client.get_author(author_id))
+    override = author.get("_affiliation_override")
+    institutions = author.get("last_known_institutions") or []
+    institution_id = override.institution_id if override else (
+        _short_id(institutions[0]["id"]) if institutions else None
+    )
+    return {
+        "id": author_id,
+        "display_name": author.get("display_name") or author_id,
+        "institution": _get_inst(author),
+        "affiliation_evidence": _affiliation_evidence(author, institution_id) if institution_id else None,
+        "orcid": author.get("orcid"),
+        "topics": [
+            {"id": _short_id(topic.get("id", "")),
+             "display_name": topic.get("display_name") or topic.get("name", "")}
+            for topic in (author.get("topics") or [])[:8] if isinstance(topic, dict)
+        ],
+        "openalex_url": f"https://openalex.org/{author_id}",
+    }
+
+
 @app.get("/api/authors/{author_id}/works", response_model=list[AuthorWork])
 async def get_author_top_works(author_id: str, limit: int = Query(default=10, ge=1, le=25)):
     author_id = _validate_id(author_id, "A")
@@ -2258,5 +2283,21 @@ async def graph_expand(
 
 
 _frontend_dir = Path(__file__).parent.parent / "frontend"
+
+
+@app.get("/discover", include_in_schema=False)
+@app.get("/connections", include_in_schema=False)
+@app.get("/saved", include_in_schema=False)
+async def application_page():
+    return FileResponse(_frontend_dir / "index.html")
+
+
+@app.get("/researchers/{author_id}", include_in_schema=False)
+async def researcher_page(author_id: str):
+    if not re.fullmatch(r"A\d{1,20}", author_id):
+        raise HTTPException(status_code=404, detail="Researcher page not found")
+    return FileResponse(_frontend_dir / "index.html")
+
+
 if _frontend_dir.exists():
     app.mount("/", StaticFiles(directory=str(_frontend_dir), html=True), name="frontend")

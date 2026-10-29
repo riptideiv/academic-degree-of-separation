@@ -1,0 +1,85 @@
+/* App destinations: quiet forms, readable evidence, one shared profile. */
+[hidden] { display:none !important; }
+body { display:flex; flex-direction:column; }
+.app-navigation { min-height:72px; flex:none; display:flex; align-items:center; gap:48px; padding:0 32px; border-bottom:1px solid var(--line); background:var(--surface); }
+.app-navigation a { color:var(--ink); text-decoration:none; }
+.app-wordmark { font-size:19px; font-weight:650; letter-spacing:-.4px; white-space:nowrap; }
+.app-navigation nav { display:flex; gap:28px; align-self:stretch; align-items:center; }
+.app-navigation nav a { display:flex; align-items:center; height:100%; border-bottom:2px solid transparent; font-size:15px; }
+.app-navigation nav a[aria-current="page"] { border-bottom-color:var(--ink); font-weight:650; }
+.app-about { margin-left:auto; font-size:14px; }
+#app-main { flex:1; min-height:0; width:100%; overflow:auto; }
+#app-notice:empty { display:none; }
+#app-notice { flex:none; padding:10px 32px; border-bottom:1px solid var(--line); background:#edf1ea; font-size:14px; }
+#app-share-fallback { position:fixed; z-index:300; top:80px; right:24px; max-width:calc(100vw - 48px); padding:16px; background:white; border:1px solid var(--line); }
+#app-share-link { width:min(500px,100%); }
+#connections-view { display:flex; height:100%; width:100%; position:relative; }
+#connections-view #app-brand { display:none; }
+#connections-view #view-switcher { bottom:0; }
+body:not([data-view="connections"]) #view-switcher { display:none !important; }
+body[data-view="connections"] #app-main { overflow:hidden; }
+.content-view { max-width:1080px; padding:56px 32px 80px; margin:auto; }
+.content-view h1, .content-view > h2 { font-size:36px; font-weight:550; letter-spacing:-1px; line-height:1.2; margin:0 0 36px; }
+.content-view h2 { font-size:22px; font-weight:600; margin:32px 0 16px; }
+.content-view p { line-height:1.6; }
+.content-view button, .content-view input, .content-view select, #app-share-fallback input, #app-share-fallback button { font:inherit; min-height:44px; border:1px solid #aab5ac; border-radius:5px; padding:10px 14px; background:white; color:var(--ink); }
+.content-view input { width:100%; min-width:0; }
+.content-view label { display:block; font-size:15px; font-weight:600; margin-bottom:10px; }
+.content-view button:hover { background:var(--green-50); }
+.content-view a { color:var(--green-800); text-underline-offset:3px; }
+.content-view .text-button { border:0; background:none; padding:8px 0; text-decoration:underline; text-underline-offset:4px; }
+.content-view .primary-button { background:var(--ink); color:#fff; border-color:var(--ink); margin-top:24px; }
+.content-view .primary-button:hover { background:var(--green-800); }
+.input-action { display:flex; gap:8px; }
+.discovery-layout { display:grid; grid-template-columns:1fr 1fr; gap:40px; align-items:start; }
+.reference-chips { list-style:none; display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+.reference-chips li { display:flex; align-items:center; border:1px solid var(--line); background:white; border-radius:5px; padding-left:12px; font-size:14px; gap:6px; }
+.reference-chips button { border:0; background:none; font-size:20px; }
+.lookup-results { list-style:none; margin-top:8px; }
+.lookup-results:not(:empty) { border:1px solid var(--line); background:white; border-radius:5px; }
+.lookup-results li { padding:12px; display:flex; align-items:center; justify-content:space-between; gap:16px; border-bottom:1px solid var(--line); }
+.lookup-results li:last-child { border-bottom:0; }
+.lookup-results li p { font-size:14px; color:var(--muted); }
+.lookup-results button { flex:none; font-size:14px; }
+#discover-view #institution-explorer-shell { position:static; display:block; width:100%; max-width:none; max-height:none; }
+#discover-view #institution-explorer { width:100%; max-height:none; box-shadow:none; border:0; background:none; }
+#discover-view #institution-explorer > summary { display:none; }
+#discover-view .explorer-content { overflow:visible; }
+#discover-view .explorer-header { padding:0; background:none; }
+#discover-view .explorer-results-scroll { overflow:visible; max-height:none; }
+#discover-view #rank-refresh { display:none; }
+#discover-view #home-institution-pill { padding:0; }
+#discover-view #rank-results { margin-top:24px; }
+#discover-view #rank-status { font-size:14px; }
+.profile-view { max-width:900px; }
+#profile-back { margin-bottom:24px; }
+#profile-heading { margin:0 0 12px; }
+.profile-affiliation { font-size:19px; }
+.evidence-label { color:var(--muted); font-size:14px; margin-top:6px; }
+.topic-list { display:flex; flex-wrap:wrap; gap:8px; margin:24px 0; }
+.topic-list span { background:#e9eee7; border-radius:4px; padding:6px 10px; font-size:14px; }
+.profile-actions, .source-links { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin:20px 0; }
+.source-links { gap:24px; font-size:14px; }
+.source-links button { border:0; background:none; padding:0; text-decoration:underline; }
+.publication-list { list-style:none; }
+.publication-list li { padding:18px 0; border-bottom:1px solid var(--line); line-height:1.6; }
+.publication-year { display:block; color:var(--muted); font-size:14px; }
+.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
+:focus-visible { outline:2px solid var(--green-700); outline-offset:4px; }
+@media(max-width:780px) {
+  .app-navigation { min-height:96px; padding:14px 20px 0; gap:12px; flex-wrap:wrap; }
+  .app-wordmark { font-size:18px; }
+  .app-navigation nav { order:3; width:100%; gap:28px; height:44px; }
+  .app-about { font-size:13px; }
+  .content-view { padding:32px 20px 80px; }
+  .content-view h1, .content-view > h2 { font-size:29px; margin-bottom:28px; }
+  .discovery-layout { grid-template-columns:1fr; gap:28px; }
+  #app-notice { padding:10px 20px; }
+  #connections-view #sidebar, #connections-view #graph-area { top:0; height:calc(100% - 56px); }
+  .lookup-results li { gap:8px; flex-wrap:wrap; }
+  .lookup-results li > div { flex:1; min-width:160px; }
+  #discover-view #home-institution-pill { align-items:center; }
+}
+@media(prefers-reduced-motion:reduce) { *, *::before, *::after { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }
+
+#connections-view .workspace-mobile-brand { display:none; }

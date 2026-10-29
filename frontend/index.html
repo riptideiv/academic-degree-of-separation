@@ -13,18 +13,19 @@
   <meta property="og:title" content="Coauthor Distance — How connected is your research world?">
   <meta property="og:description" content="Explore coauthor paths and discover researchers at your university through the authors you already read. Free, interactive, and powered by OpenAlex.">
   <meta property="og:url" content="https://academic-degree-of-separation.onrender.com/">
-  <meta property="og:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png?v=20261029-name-1">
+  <meta property="og:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png?v=20261029-expand-1">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Coauthor Distance: find the people behind the papers. Illustration of a connected research network.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Coauthor Distance — How connected is your research world?">
   <meta name="twitter:description" content="Explore coauthor paths and discover researchers at your university through the authors you already read.">
-  <meta name="twitter:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png?v=20261029-name-1">
+  <meta name="twitter:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png?v=20261029-expand-1">
   <meta name="twitter:image:alt" content="Coauthor Distance: find the people behind the papers. Illustration of a connected research network.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?v=20261029-name-1">
-  <link rel="stylesheet" href="workspace.css?v=20261029-name-1">
+  <link rel="stylesheet" href="/style.css?v=20261029-expand-1">
+  <link rel="stylesheet" href="/workspace.css?v=20261029-expand-1">
+  <link rel="stylesheet" href="/shell.css?v=20261029-expand-1">
   <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -47,7 +48,74 @@
   <script defer src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
 </head>
 
-<body>
+<body data-view="discover">
+  <header class="app-navigation">
+    <a href="/discover" data-nav="discover" class="app-wordmark">Coauthor Distance</a>
+    <nav aria-label="Main navigation"><a href="/discover" data-nav="discover">Discover</a><a href="/connections" data-nav="connections">Connections</a><a href="/saved" data-nav="saved">Saved</a></nav>
+    <a class="app-about" href="/guide/">About</a>
+  </header>
+  <p id="app-notice" role="status"></p>
+  <div id="app-share-fallback" hidden><label for="app-share-link">Copy this link</label><input id="app-share-link" readonly><button type="button" onclick="this.parentElement.hidden=true">Close</button></div>
+  <main id="app-main">
+    <section id="discover-view" class="content-view" aria-labelledby="discover-heading">
+      <h1 id="discover-heading" tabindex="-1">Find your research people.</h1>
+      <div class="discovery-layout">
+        <div class="discovery-inputs">
+          <form id="reference-form">
+            <label for="reference-query">Researchers whose work interests you</label>
+            <div class="input-action"><input id="reference-query" type="search" minlength="2" maxlength="300" placeholder="Search a researcher" required><button type="submit">Find</button></div>
+          </form>
+          <ul id="reference-results" class="lookup-results" aria-live="polite"></ul>
+          <ul id="discovery-references" class="reference-chips" aria-label="Discovery references"></ul>
+          <button id="use-graph-references" type="button" class="text-button">Use researchers from my graph</button>
+        </div>
+        <div id="campus-destination">    <div id="institution-explorer-shell">
+      <details id="institution-explorer" class="graph-window" open>
+        <summary class="graph-window-title">
+          <span>University</span>
+          <button type="button" class="info-button" aria-label="About Institution Explorer" aria-describedby="institution-info-tooltip">i</button>
+        </summary>
+        <div class="explorer-content" aria-live="polite">
+          <header class="explorer-header">
+            <div id="home-institution-picker">
+              <label for="rank-institution-input">University or institution</label>
+              <div id="rank-institution-wrapper">
+                <input type="text" id="rank-institution-input" placeholder="Choose your institution…" autocomplete="off">
+                <button class="smooth-button" id="rank-institution-search" type="button">Choose</button>
+              </div>
+            </div>
+            <div id="home-institution-pill" class="hidden">
+              <span id="home-institution-name"></span>
+              <button id="home-institution-change" type="button">Change</button>
+            </div>
+            <div class="explorer-actions">
+              <div id="rank-status"></div>
+              <div id="explorer-loading" class="hidden"><span class="mini-spinner" aria-hidden="true"></span><span>Updating recommendations…</span></div>
+              <button class="icon-button" id="rank-refresh" type="button" aria-label="Refresh researcher suggestions" title="Refresh suggestions">↻</button>
+            </div>
+          </header>
+          <div class="explorer-results-scroll"><ul id="rank-results"></ul></div>
+        </div>
+      </details>
+      <aside id="author-sidecar" class="hidden" aria-live="polite" aria-label="Author details">
+        <button id="author-sidecar-close" type="button" aria-label="Close author details">×</button>
+        <div id="author-sidecar-content"></div>
+      </aside>
+    </div>
+
+        </div>
+      </div>
+      <button id="discovery-submit" type="button" class="primary-button">Find researchers</button>
+    </section>
+    <section id="saved-view" class="content-view" aria-labelledby="saved-heading" hidden>
+      <h2 id="saved-heading" tabindex="-1">Saved research</h2><div id="saved-content"></div>
+    </section>
+    <section id="profile-view" class="content-view profile-view" aria-labelledby="profile-heading" hidden>
+      <button type="button" id="profile-back" class="text-button">← Back</button>
+      <h2 id="profile-heading" tabindex="-1">Researcher</h2><div id="profile-body"></div>
+    </section>
+    <section id="connections-view" aria-label="Connections" hidden>
+      <h2 id="connections-heading" class="sr-only" tabindex="-1">Connections</h2>
   <a class="skip-link" href="#search-input">Skip to researcher search</a>
   <div id="sidebar">
     <div id="app-brand" aria-label="Coauthor Distance">
@@ -189,7 +257,7 @@
     </div>
     <div id="empty-state">
       <div id="empty-state-content">
-        <h1>Find a connection.</h1>
+        <h2>Find a connection.</h2>
         <div class="empty-actions">
           <button id="start-personal" type="button">Choose researchers</button>
           <button id="empty-example" type="button">Try Hinton &amp; Bengio</button>
@@ -197,39 +265,6 @@
         <button id="start-campus" type="button">Explore a university</button>
         <noscript><p>JavaScript is required for the map. <a href="/guide/">Read the guide</a>.</p></noscript>
       </div>
-    </div>
-    <div id="institution-explorer-shell">
-      <details id="institution-explorer" class="graph-window">
-        <summary class="graph-window-title">
-          <span>Explore your campus</span>
-          <button type="button" class="info-button" aria-label="About Institution Explorer" aria-describedby="institution-info-tooltip">i</button>
-        </summary>
-        <div class="explorer-content" aria-live="polite">
-          <header class="explorer-header">
-            <div id="home-institution-picker">
-              <label for="rank-institution-input">University or institution</label>
-              <div id="rank-institution-wrapper">
-                <input type="text" id="rank-institution-input" placeholder="Choose your institution…" autocomplete="off">
-                <button class="smooth-button" id="rank-institution-search" type="button">Choose</button>
-              </div>
-            </div>
-            <div id="home-institution-pill" class="hidden">
-              <span id="home-institution-name"></span>
-              <button id="home-institution-change" type="button">Change</button>
-            </div>
-            <div class="explorer-actions">
-              <div id="rank-status"></div>
-              <div id="explorer-loading" class="hidden"><span class="mini-spinner" aria-hidden="true"></span><span>Updating recommendations…</span></div>
-              <button class="icon-button" id="rank-refresh" type="button" aria-label="Refresh researcher suggestions" title="Refresh suggestions">↻</button>
-            </div>
-          </header>
-          <div class="explorer-results-scroll"><ul id="rank-results"></ul></div>
-        </div>
-      </details>
-      <aside id="author-sidecar" class="hidden" aria-live="polite" aria-label="Author details">
-        <button id="author-sidecar-close" type="button" aria-label="Close author details">×</button>
-        <div id="author-sidecar-content"></div>
-      </aside>
     </div>
     <div id="institution-info-tooltip" role="tooltip" class="floating-tooltip hidden">Checks a bounded, topic-balanced set of researchers and only shows coauthor paths backed by publication records. Affiliation labels distinguish reviewed current evidence from OpenAlex last-known data. Results are not an exhaustive search of everyone at the institution.</div>
     <details id="graph-legend" class="hidden">
@@ -248,6 +283,9 @@
     <div id="cy"></div>
   </div>
 
+    </section>
+  </main>
+
   <div id="search-modal" class="hidden">
     <div id="search-backdrop"></div>
     <div id="search-dialog" role="dialog" aria-modal="true" aria-labelledby="search-title" tabindex="-1">
@@ -265,10 +303,12 @@
     <button id="view-menu" type="button" aria-pressed="false">Search &amp; tools</button>
   </div>
 
-  <script defer src="graph_links.js?v=20261029-name-1"></script>
-  <script defer src="research_export.js?v=20261029-name-1"></script>
-  <script defer src="usage_analytics.js?v=20260926-1"></script>
-  <script defer src="app.js?v=20261029-name-1"></script>
+  <script defer src="/graph_links.js?v=20261029-expand-1"></script>
+  <script defer src="/research_export.js?v=20261029-expand-1"></script>
+  <script defer src="/usage_analytics.js?v=20260926-1"></script>
+  <script defer src="/discovery_state.js?v=20261029-expand-1"></script>
+  <script defer src="/app_shell.js?v=20261029-expand-1"></script>
+  <script defer src="/app.js?v=20261029-expand-1"></script>
 </body>
 
 </html>
