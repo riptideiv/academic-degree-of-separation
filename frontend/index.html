@@ -4,31 +4,32 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Researcher Connections &amp; Coauthor Paths | Six Degrees</title>
+  <title>Coauthor Atlas · How connected is your research world?</title>
   <meta name="description" content="Find coauthor paths between researchers, explore academic networks, and discover connections at your university with this free OpenAlex-powered tool.">
   <link rel="canonical" href="https://academic-degree-of-separation.onrender.com/">
-  <meta name="theme-color" content="#173d2b">
+  <meta name="theme-color" content="#243d36">
   <meta property="og:type" content="website">
-  <meta property="og:site_name" content="Six Degrees of Academia">
-  <meta property="og:title" content="Six Degrees of Academia — Find the people behind the papers">
+  <meta property="og:site_name" content="Coauthor Atlas">
+  <meta property="og:title" content="Coauthor Atlas — How connected is your research world?">
   <meta property="og:description" content="Explore coauthor paths and discover researchers at your university through the authors you already read. Free, interactive, and powered by OpenAlex.">
   <meta property="og:url" content="https://academic-degree-of-separation.onrender.com/">
   <meta property="og:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Six Degrees of Academia: find the people behind the papers. Illustration of a connected research network.">
+  <meta property="og:image:alt" content="Coauthor Atlas: find the people behind the papers. Illustration of a connected research network.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Six Degrees of Academia — Find the people behind the papers">
+  <meta name="twitter:title" content="Coauthor Atlas — How connected is your research world?">
   <meta name="twitter:description" content="Explore coauthor paths and discover researchers at your university through the authors you already read.">
   <meta name="twitter:image" content="https://academic-degree-of-separation.onrender.com/social-preview.png">
-  <meta name="twitter:image:alt" content="Six Degrees of Academia: find the people behind the papers. Illustration of a connected research network.">
+  <meta name="twitter:image:alt" content="Coauthor Atlas: find the people behind the papers. Illustration of a connected research network.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?v=20260926-3">
+  <link rel="stylesheet" href="style.css?v=20261029-clean-1">
+  <link rel="stylesheet" href="atlas.css?v=20261029-clean-1">
   <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@type": "WebApplication",
-      "name": "Six Degrees of Academia",
+      "name": "Coauthor Atlas",
       "url": "https://academic-degree-of-separation.onrender.com/",
       "description": "Explore connections between researchers through co-authorship, citations, and shared institutions using OpenAlex data.",
       "applicationCategory": "EducationalApplication",
@@ -47,25 +48,24 @@
 </head>
 
 <body>
+  <a class="skip-link" href="#search-input">Skip to researcher search</a>
   <div id="sidebar">
-    <div id="app-brand" aria-label="Six Degrees of Academia">
+    <div id="app-brand" aria-label="Coauthor Atlas">
       <svg class="brand-mark" viewBox="0 0 42 42" aria-hidden="true"><path d="M9 27 20 13l13 8M9 27l18 6m-7-20 7 20"/><circle cx="9" cy="27" r="4"/><circle cx="20" cy="13" r="4"/><circle cx="33" cy="21" r="4"/><circle cx="27" cy="33" r="4"/></svg>
-      <div><strong>Six Degrees</strong><span>of Academia</span></div>
+      <div><strong>Coauthor Atlas</strong></div>
     </div>
-    <nav class="app-links" aria-label="Help and project">
-      <a href="/guide/">How to use this tool</a>
-      <a href="https://github.com/riptideiv/academic-degree-of-separation" target="_blank" rel="noopener">Source code ↗</a>
-    </nav>
     <details class="side-card" id="sec-researchers" open>
-      <summary>Researchers</summary>
+      <summary>Search</summary>
       <div class="side-card-body">
+        <label class="field-label" for="search-input">Researcher</label>
         <div id="search-wrapper">
           <input type="text" id="search-input" aria-label="Researcher name" placeholder="Add a researcher…" autocomplete="off">
           <button class="smooth-button" id="search-btn" type="button">Search</button>
         </div>
 
+        <label class="field-label" for="work-search-input">Paper</label>
         <div id="work-search-wrapper">
-          <input type="text" id="work-search-input" aria-label="Work title" placeholder="Add a work…" autocomplete="off">
+          <input type="text" id="work-search-input" aria-label="Work title" placeholder="Search a paper title…" autocomplete="off">
           <button class="smooth-button" id="work-search-btn" type="button">Search</button>
         </div>
 
@@ -79,33 +79,33 @@
       </div>
     </details>
 
-    <details class="side-card" id="sec-options" open>
-      <summary>Search options</summary>
+    <details class="side-card" id="sec-options">
+      <summary>Connection settings</summary>
       <div class="side-card-body">
-        <div class="section-label">Edge types</div>
+        <div class="section-label">Connect researchers through</div>
         <div id="edge-toggles">
           <label><input type="checkbox" id="edge-coauthor" checked> Co-authorship</label>
-          <label><input type="checkbox" id="edge-citation" checked> Citations</label>
-          <label><input type="checkbox" id="edge-institution" checked> Institution</label>
+          <label><input type="checkbox" id="edge-citation"> Citations</label>
+          <label><input type="checkbox" id="edge-institution"> Institution</label>
         </div>
 
-        <div class="section-label">Work edge types</div>
+        <div class="section-label">Connect papers through</div>
         <div id="work-edge-toggles">
           <label><input type="checkbox" id="work-edge-authorship" checked> Authors of work</label>
-          <label><input type="checkbox" id="work-edge-citation" checked> Cited the work</label>
+          <label><input type="checkbox" id="work-edge-citation" checked> Paper citations</label>
         </div>
 
-        <div class="section-label">Neighborhood</div>
+        <label class="section-label" for="neighborhood">Surrounding network</label>
         <select id="neighborhood">
           <option value="0,1">Just the connection</option>
-          <option value="2,6" selected>Small</option>
+          <option value="1,4" selected>A few connections</option>
+          <option value="2,6">Small</option>
           <option value="2,12">Medium</option>
           <option value="3,16">Large</option>
         </select>
 
         <button class="smooth-button" id="apply-options" type="button"
           title="Re-run the search with the edge type and neighborhood settings above">Apply options</button>
-        <div class="apply-hint">Options above take effect when you apply; the search re-runs.</div>
       </div>
     </details>
 
@@ -125,6 +125,11 @@
           <label>Link length
             <input type="range" id="layout-link" min="40" max="220" step="10" value="100">
           </label>
+        </div>
+        <div class="reset-actions">
+          <button id="restore-settings" title="Re-apply the settings from the last completed search">Restore last search settings</button>
+          <button id="restore-default-layout" title="Reset spacing and link-length sliders to defaults">Reset layout</button>
+
         </div>
       </div>
     </details>
@@ -147,111 +152,62 @@
     </details>
 
     <div id="node-detail" class="hidden">
-      <h3 id="detail-name"></h3>
+      <h3 id="detail-name" tabindex="-1"></h3>
       <div id="detail-meta"></div>
+      <p class="settings-help">OpenAlex affiliations may be incomplete or outdated.</p>
       <a id="detail-link" href="#" target="_blank" rel="noopener">View on OpenAlex →</a>
+      <button id="detail-add" type="button" class="smooth-button">Use as a starting point</button>
     </div>
 
     <div id="canvas-actions">
-      <div class="graph-action-row">
-        <button id="fit-graph" type="button" disabled>Fit graph</button>
-        <button id="export-image" type="button" disabled>Save image</button>
-      </div>
-      <button id="export-paths" type="button" disabled>Download connection report</button>
-      <div id="export-status" class="settings-help" role="status"></div>
-      <button id="restore-settings" title="Re-apply the settings from the last completed search">Restore
-        settings</button>
-      <button id="restore-default-layout" title="Reset spacing and link-length sliders to defaults">Default
-        layout</button>
-      <hr style="width: 70%; margin: 10px auto;">
-      <button id="clear-canvas" title="Clear this canvas and its saved graph">Clear canvas</button>
+      <button id="clear-canvas" title="Clear this canvas and its saved graph">Start a new map</button>
     </div>
+    <nav class="app-links" aria-label="Help and project">
+      <a href="/guide/">About</a>
+      <a href="https://github.com/riptideiv/academic-degree-of-separation" target="_blank" rel="noopener">Source code ↗</a>
+    </nav>
   </div>
 
   <div id="sidebar-resizer" title="Drag to resize · click to collapse/expand"></div>
 
   <div id="graph-area">
-    <button id="menu-toggle" type="button" aria-label="Toggle menu">☰</button>
+    <header class="workspace-header">
+      <div class="workspace-title"><button id="menu-toggle" type="button" aria-label="Toggle search panel" aria-controls="sidebar">☰</button><div><span class="workspace-mobile-brand">Coauthor Atlas</span><p id="map-summary" aria-live="polite"></p></div></div>
+      <div class="workspace-actions hidden" aria-label="Map tools">
+        <button id="fit-graph" type="button" disabled>Fit map</button>
+        <button id="export-image" type="button" disabled>Save image</button>
+        <button id="export-paths" type="button" disabled>Export report</button>
+        <button id="share-graph" type="button" class="primary-action" disabled>Share map <span aria-hidden="true">↗</span></button>
+      </div>
+    </header>
+    <div class="map-feedback"><p id="export-status" role="status"></p><div id="share-fallback" class="hidden"><label for="share-link">Copy this map link</label><input id="share-link" readonly type="text"></div></div>
+    <div id="next-step" class="hidden"><span>Add a second researcher to find a connection.</span><button id="add-another" type="button">Add researcher →</button></div>
+    <div id="connection-summary" class="hidden" role="status"><span id="connection-summary-text"></span><button id="view-connection" type="button">See the connection →</button></div>
     <div id="progress-overlay" class="hidden">
       <span id="progress-text" role="status" aria-live="polite">Loading…</span>
       <button id="stop-search" type="button" class="hidden">Stop search</button>
     </div>
     <div id="empty-state">
-      <!-- Decorative sample network drawn behind the prompt. Blurred + white-washed
-           (see #sample-graph / #sample-wash in style.css) so the copy stays legible;
-           it's purely illustrative, aria-hidden from assistive tech. -->
-      <svg id="sample-graph" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-        <g class="s-edges">
-          <line x1="500" y1="320" x2="250" y2="170" />
-          <line x1="250" y1="170" x2="120" y2="90" />
-          <line x1="250" y1="170" x2="110" y2="250" />
-          <line x1="250" y1="170" x2="300" y2="60" />
-          <line x1="250" y1="170" x2="380" y2="250" />
-          <line x1="500" y1="320" x2="380" y2="250" />
-          <line x1="500" y1="320" x2="620" y2="180" />
-          <line x1="620" y1="180" x2="760" y2="110" />
-          <line x1="620" y1="180" x2="880" y2="180" />
-          <line x1="620" y1="180" x2="720" y2="280" />
-          <line x1="500" y1="320" x2="760" y2="400" />
-          <line x1="760" y1="400" x2="890" y2="350" />
-          <line x1="760" y1="400" x2="900" y2="470" />
-          <line x1="760" y1="400" x2="820" y2="540" />
-          <line x1="500" y1="320" x2="360" y2="460" />
-          <line x1="360" y1="460" x2="200" y2="420" />
-          <line x1="360" y1="460" x2="230" y2="540" />
-          <line x1="360" y1="460" x2="420" y2="580" />
-          <line x1="500" y1="320" x2="560" y2="480" />
-          <line x1="560" y1="480" x2="610" y2="600" />
-          <line x1="110" y1="250" x2="60" y2="360" />
-          <line x1="720" y1="280" x2="820" y2="300" />
-          <line x1="380" y1="250" x2="300" y2="60" />
-        </g>
-        <g class="s-nodes">
-          <circle cx="250" cy="170" r="18" class="s-origin" />
-          <circle cx="760" cy="400" r="18" class="s-origin" />
-          <circle cx="500" cy="320" r="12" class="s-path" />
-          <circle cx="620" cy="180" r="11" class="s-path" />
-          <circle cx="360" cy="460" r="11" class="s-path" />
-          <circle cx="120" cy="90" r="7" class="s-neigh" />
-          <circle cx="110" cy="250" r="9" class="s-neigh" />
-          <circle cx="300" cy="60" r="8" class="s-neigh" />
-          <circle cx="380" cy="250" r="10" class="s-neigh" />
-          <circle cx="60" cy="360" r="6" class="s-neigh" />
-          <circle cx="760" cy="110" r="8" class="s-neigh" />
-          <circle cx="880" cy="180" r="7" class="s-neigh" />
-          <circle cx="720" cy="280" r="9" class="s-neigh" />
-          <circle cx="890" cy="350" r="7" class="s-neigh" />
-          <circle cx="900" cy="470" r="8" class="s-neigh" />
-          <circle cx="820" cy="540" r="6" class="s-neigh" />
-          <circle cx="200" cy="420" r="8" class="s-neigh" />
-          <circle cx="230" cy="540" r="7" class="s-neigh" />
-          <circle cx="420" cy="580" r="9" class="s-neigh" />
-          <circle cx="560" cy="480" r="8" class="s-neigh" />
-          <circle cx="610" cy="600" r="6" class="s-neigh" />
-          <rect x="812" y="292" width="16" height="16" class="s-work" transform="rotate(45 820 300)" />
-        </g>
-      </svg>
-      <div id="sample-wash"></div>
       <div id="empty-state-content">
-        <h1>Find connections between researchers</h1>
-        <p>Trace coauthor paths, citations, and shared institutions with OpenAlex.
-          Add two researchers to explore their academic network.</p>
-        <button id="empty-example" type="button">Try an example: Geoffrey Hinton ↔ Yoshua Bengio</button>
-        <p class="empty-use-case">Looking for people to work with? Add authors you read, then choose your university in Institution Explorer.</p>
-        <a class="empty-guide" href="/guide/">Find research collaborators: a step-by-step guide →</a>
-        <noscript><p>JavaScript is required for the interactive graph. The <a href="/guide/">research network guide</a> works without it.</p></noscript>
+        <h1>Find a connection.</h1>
+        <div class="empty-actions">
+          <button id="start-personal" type="button">Choose researchers</button>
+          <button id="empty-example" type="button">Try Hinton &amp; Bengio</button>
+        </div>
+        <button id="start-campus" type="button">Explore a university</button>
+        <noscript><p>JavaScript is required for the map. <a href="/guide/">Read the guide</a>.</p></noscript>
       </div>
     </div>
     <div id="institution-explorer-shell">
       <details id="institution-explorer" class="graph-window">
         <summary class="graph-window-title">
-          <span>Institution Explorer</span>
+          <span>Explore your campus</span>
           <button type="button" class="info-button" aria-label="About Institution Explorer" aria-describedby="institution-info-tooltip">i</button>
         </summary>
         <div class="explorer-content" aria-live="polite">
           <header class="explorer-header">
             <div id="home-institution-picker">
-              <label for="rank-institution-input">Home institution</label>
+              <label for="rank-institution-input">University or institution</label>
               <div id="rank-institution-wrapper">
                 <input type="text" id="rank-institution-input" placeholder="Choose your institution…" autocomplete="off">
                 <button class="smooth-button" id="rank-institution-search" type="button">Choose</button>
@@ -266,7 +222,6 @@
               <div id="explorer-loading" class="hidden"><span class="mini-spinner" aria-hidden="true"></span><span>Updating recommendations…</span></div>
               <button class="icon-button" id="rank-refresh" type="button" aria-label="Refresh researcher suggestions" title="Refresh suggestions">↻</button>
             </div>
-            <p class="explorer-method-note"><span aria-hidden="true">✓</span> Publication-verified coauthor paths · bounded candidate search</p>
           </header>
           <div class="explorer-results-scroll"><ul id="rank-results"></ul></div>
         </div>
@@ -277,7 +232,7 @@
       </aside>
     </div>
     <div id="institution-info-tooltip" role="tooltip" class="floating-tooltip hidden">Checks a bounded, topic-balanced set of researchers and only shows coauthor paths backed by publication records. Affiliation labels distinguish reviewed current evidence from OpenAlex last-known data. Results are not an exhaustive search of everyone at the institution.</div>
-    <details id="graph-legend" class="hidden" open>
+    <details id="graph-legend" class="hidden">
       <summary class="legend-title">Legend</summary>
       <div class="legend-row"><span class="legend-node" style="background:#f5821e"></span> Searched researcher</div>
       <div class="legend-row"><span class="legend-node" style="background:#5badd9; width:9px; height:9px;"></span> On a
@@ -306,13 +261,14 @@
   </div>
 
   <div id="view-switcher">
-    <button id="view-graph" type="button" class="active">Graph</button>
-    <button id="view-menu" type="button">Menu</button>
+    <button id="view-graph" type="button" class="active" aria-pressed="true">Map</button>
+    <button id="view-menu" type="button" aria-pressed="false">Search &amp; tools</button>
   </div>
 
-  <script defer src="research_export.js?v=20260907-1"></script>
+  <script defer src="graph_links.js?v=20261029-clean-1"></script>
+  <script defer src="research_export.js?v=20261029-clean-1"></script>
   <script defer src="usage_analytics.js?v=20260926-1"></script>
-  <script defer src="app.js?v=20260926-2"></script>
+  <script defer src="app.js?v=20261029-clean-1"></script>
 </body>
 
 </html>

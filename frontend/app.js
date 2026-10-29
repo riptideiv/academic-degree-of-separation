@@ -27,6 +27,7 @@
     activeSource: null,
     cancelExpansion: null,
     isLoading: false,
+    selectedNodeId: null,
     // When false (default), only the researchers of interest + the connecting
     // path are labeled; expansion ("neighborhood") names show on hover only.
     showNames: false,
@@ -87,7 +88,7 @@
   // and the min/max range across all expansion nodes currently in the graph.
   // tW drives shade + size (more papers = darker + larger).
   // tC drives z-index (more cited = renders on top).
-  // Size range: 6px (least papers) → 102px (most papers = 3× origin node of 34px).
+  // Keep surrounding nodes below the 34px starting points: 10–28px.
   function expansionStyleRelative(worksCount, citedByCount, minW, maxW, minC, maxC) {
     const tW = maxW > minW ? (worksCount - minW) / (maxW - minW) : 0.5;
     const tC = maxC > minC ? (citedByCount - minC) / (maxC - minC) : 0.5;
@@ -95,13 +96,13 @@
     const v = Math.round(light - tW * (light - dark));
     const hex = v.toString(16).padStart(2, '0');
     const bgColor = `#${hex}${hex}${hex}`;
-    const nodeSize = Math.round(6 + tW * 96); // 6 → 102 (3× origin)
+    const nodeSize = Math.round(10 + tW * 18);
     return {
       bgColor,
       fontColor: bgColor,
       nodeSize,
-      // Label scales with the node so big (prolific) nodes get big names: 7 → 20px.
-      fontSize: Math.round(7 + tW * 13),
+      // Nearby researchers stay readable without dominating the starting points.
+      fontSize: Math.round(9 + tW * 3),
       zIdx: Math.max(1, Math.min(90, Math.round(tC * 90))),
     };
   }
@@ -334,6 +335,7 @@
   cy.on('tap', 'node', function (evt) {
     hideTooltip();
     const data = evt.target.data();
+    state.selectedNodeId = data.id;
     document.getElementById('detail-name').textContent = data.name;
     document.getElementById('detail-meta').innerHTML = data.type === 'work'
       ? [
@@ -341,11 +343,23 @@
         `<div>${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
       ].join('')
       : [
-        data.institution ? `<div>${escHtml(data.institution)}</div>` : '',
+        data.institution ? `<div>OpenAlex affiliation: ${escHtml(data.institution)}</div>` : '',
         `<div>${(data.works_count || 0).toLocaleString()} works · ${(data.cited_by_count || 0).toLocaleString()} citations</div>`,
       ].join('');
     document.getElementById('detail-link').href = `https://openalex.org/${data.id}`;
     document.getElementById('node-detail').classList.remove('hidden');
+    focusResearcherSearch();
+    document.getElementById('node-detail').scrollIntoView({ block: 'nearest' });
+    document.getElementById('detail-name').focus();
+    updateOverlays();
+  });
+
+  document.getElementById('detail-add')?.addEventListener('click', () => {
+    if (state.isLoading || !state.selectedNodeId || state.origins.has(state.selectedNodeId)) return;
+    const data = cy.getElementById(state.selectedNodeId).data();
+    if (!data?.id) return;
+    addResearcher({ id: data.id, display_name: data.name });
+    if (window.matchMedia('(max-width: 780px)').matches) document.getElementById('view-graph')?.click();
   });
 
   cy.on('tap', function (evt) {
@@ -608,6 +622,7 @@
     // Wipe client state
     cy.elements().remove();
     state.origins.clear();
+    state.selectedNodeId = null;
     state.pathNodes.clear();
     state.paths.clear();
     state.authorCache.clear();
@@ -615,6 +630,9 @@
     document.getElementById('node-detail').classList.add('hidden');
     renderDegrees();
     clearSavedState();
+    if (window.location.hash.startsWith('#map=')) window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    document.getElementById('export-status').textContent = '';
+    document.getElementById('share-fallback')?.classList.add('hidden');
     runInstitutionRank();
   });
 
@@ -1249,11 +1267,11 @@
 
   const DEFAULT_SETTINGS = {
     edgeCoauthor: true,
-    edgeCitation: true,
-    edgeInstitution: true,
+    edgeCitation: false,
+    edgeInstitution: false,
     workEdgeAuthorship: true,
     workEdgeCitation: true,
-    neighborhood: '2,6',
+    neighborhood: '1,4',
     showNames: false,
     layoutSpacing: '5',
     layoutLink: '100',
@@ -1333,6 +1351,8 @@
     // Restore full graph (nodes + edges) directly into Cytoscape
     try { cy.add(elements); } catch { /* ignore stale element errors */ }
 
+    rescaleExpansionNodes();
+
     // Rebuild pathNodes set from restored graph
     cy.nodes('[type="path"]').forEach(n => state.pathNodes.add(n.id()));
 
@@ -1376,7 +1396,7 @@
 
     const name = document.createElement('span');
     name.className = 'chip-name';
-    name.textContent = work ? `📄 ${label}` : label;
+    name.textContent = work ? `Paper · ${label}` : label;
 
     const remove = document.createElement('button');
     remove.className = 'chip-remove';
@@ -1814,7 +1834,7 @@
     cy.layout({
       name: 'fcose',
       quality: 'default',
-      animate: true,
+      animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
       animationDuration: 250,
       randomize: false,
       fit,
@@ -1841,7 +1861,7 @@
       cy.layout({
         name: 'fcose',
         quality: 'proof',
-        animate: true,
+        animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
         animationDuration: 700,
         randomize: true,
         fit: true,
@@ -1860,7 +1880,7 @@
     // Fallback if the fCoSE CDN script failed to load (no fixed-node support).
     cy.layout({
       name: 'cose',
-      animate: true,
+      animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
       animationDuration: 600,
       nodeRepulsion: lp.repulsion,
       idealEdgeLength: lp.edgeLength,
@@ -1875,7 +1895,7 @@
 
   // Neighborhood size control → {depth, topK}. depth 0 = path only (no expansion).
   function getNeighborhood() {
-    const raw = (document.getElementById('neighborhood')?.value || '2,6').split(',');
+    const raw = (document.getElementById('neighborhood')?.value || '1,4').split(',');
     return { depth: parseInt(raw[0], 10), topK: parseInt(raw[1], 10) };
   }
 
@@ -1959,6 +1979,66 @@
     if (cy.nodes().length) cy.fit(cy.elements(), 60);
   });
 
+  function focusResearcherSearch() {
+    document.getElementById('sec-researchers').open = true;
+    const sidebar = document.getElementById('sidebar');
+    sidebar.classList.remove('collapsed');
+    document.getElementById('menu-toggle')?.setAttribute('aria-expanded', 'true');
+    if (window.matchMedia('(max-width: 780px)').matches) {
+      document.getElementById('view-menu')?.click();
+    } else if (sidebar.getBoundingClientRect().width < 280) {
+      sidebar.style.width = '320px';
+      setTimeout(() => cy.resize(), 200);
+    }
+    searchInput.focus();
+  }
+
+  document.querySelector('.skip-link')?.addEventListener('click', event => {
+    event.preventDefault();
+    focusResearcherSearch();
+  });
+
+  ['start-personal', 'add-another'].forEach(id => {
+    document.getElementById(id)?.addEventListener('click', focusResearcherSearch);
+  });
+  document.getElementById('view-connection')?.addEventListener('click', () => {
+    focusResearcherSearch();
+    const count = document.querySelector('#degrees-list .degrees-count');
+    if (count && !document.querySelector('#degrees-list .degrees-steps')) count.click();
+    document.getElementById('degrees-panel')?.scrollIntoView({ block: 'nearest' });
+    count?.focus();
+  });
+  document.getElementById('start-campus')?.addEventListener('click', () => {
+    document.getElementById('institution-explorer').open = true;
+    rankInstitutionInput.focus();
+  });
+
+  document.getElementById('share-graph')?.addEventListener('click', async () => {
+    if (state.isLoading || !state.origins.size || !window.GraphLinks) return;
+    const status = document.getElementById('export-status');
+    try {
+      const url = window.GraphLinks.encode(window.location.href, {
+        v: 1,
+        origins: [...state.origins].map(id => ({ id, name: cy.getElementById(id).data('name') || id })),
+        edges: getEnabledEdges(), workEdges: getEnabledWorkEdges(),
+        neighborhood: document.getElementById('neighborhood').value,
+      });
+      try {
+        await navigator.clipboard.writeText(url);
+        status.textContent = 'Link copied. It rebuilds these starting points; live results may change.';
+      } catch {
+        const field = document.getElementById('share-link');
+        field.value = url;
+        document.getElementById('share-fallback').classList.remove('hidden');
+        field.focus();
+        field.select();
+        status.textContent = 'Copy the link below to share your starting points.';
+      }
+    } catch {
+      status.textContent = 'This map is too large to share as a link. Save an image or export a report instead.';
+    }
+  });
+
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1974,7 +2054,7 @@
     if (state.isLoading || !cy.nodes().length) return;
     const origins = [...state.origins].map(id => ({ id, name: cy.getElementById(id).data('name') || id }));
     const report = window.ResearchExport.report({ origins, paths: [...state.paths.values()] });
-    downloadBlob(new Blob([report], { type: 'text/markdown;charset=utf-8' }), 'academia-connections.md');
+    downloadBlob(new Blob([report], { type: 'text/markdown;charset=utf-8' }), 'coauthor-atlas-connections.md');
     document.getElementById('export-status').textContent = 'Connection report downloaded.';
   });
 
@@ -1986,7 +2066,7 @@
     status.textContent = 'Preparing image…';
     try {
       const blob = await cy.png({ output: 'blob-promise', full: true, bg: '#fafafa', maxWidth: 2400, maxHeight: 1800 });
-      downloadBlob(blob, 'academia-graph.png');
+      downloadBlob(blob, 'coauthor-atlas-map.png');
       status.textContent = 'Graph image downloaded.';
     } catch {
       status.textContent = 'Could not save the image. Try again with a smaller graph.';
@@ -2000,7 +2080,12 @@
   // is a graph to explain.
   function updateOverlays() {
     const hasNodes = cy.nodes().length > 0;
-    ['fit-graph', 'export-image'].forEach(id => {
+    const detailAdd = document.getElementById('detail-add');
+    if (detailAdd) {
+      detailAdd.disabled = state.isLoading || !state.selectedNodeId || state.origins.has(state.selectedNodeId);
+      detailAdd.textContent = state.origins.has(state.selectedNodeId) ? 'Already a starting point' : 'Use as a starting point';
+    }
+    ['fit-graph', 'export-image', 'share-graph'].forEach(id => {
       const button = document.getElementById(id);
       if (button) button.disabled = !hasNodes || state.isLoading;
     });
@@ -2008,6 +2093,18 @@
     if (reportButton) reportButton.disabled = !hasNodes || state.isLoading;
     document.getElementById('empty-state')?.classList.toggle('hidden', hasNodes || state.isLoading);
     document.getElementById('graph-legend')?.classList.toggle('hidden', !hasNodes);
+    document.querySelector('.workspace-actions')?.classList.toggle('hidden', !hasNodes);
+    document.getElementById('clear-canvas')?.classList.toggle('hidden', !hasNodes);
+    const summary = document.getElementById('map-summary');
+    if (summary) summary.textContent = hasNodes
+      ? `${state.origins.size} starting point${state.origins.size === 1 ? '' : 's'} · ${cy.nodes().length} node${cy.nodes().length === 1 ? '' : 's'}`
+      : '';
+    document.getElementById('next-step')?.classList.toggle('hidden', state.origins.size !== 1 || state.isLoading);
+    document.getElementById('institution-explorer-shell')?.classList.toggle('welcome-campus', !hasNodes);
+    const latest = [...state.paths.values()].at(-1);
+    document.getElementById('connection-summary')?.classList.toggle('hidden', !latest || state.isLoading);
+    const connectionText = document.getElementById('connection-summary-text');
+    if (connectionText && latest) connectionText.textContent = `${latest.from_name} ↔ ${latest.to_name}: ${degreesLabel(latest)}${latest.search_complete === false ? ' · limited coverage' : ''}`;
   }
 
   let overlayTimer = null;
@@ -2020,20 +2117,22 @@
   // Sequential on purpose — the second add computes the path to the first.
   document.getElementById('empty-example')?.addEventListener('click', async () => {
     if (state.isLoading || state.origins.size) return;
+    // A focused coauthor map makes the first example quick and interpretable.
+    applySettings({ ...DEFAULT_SETTINGS, neighborhood: '1,4' });
     const status = await addResearcher({ id: 'A5108093963', display_name: 'Geoffrey E. Hinton' });
     if (status !== 'done') return;
     await addResearcher({ id: 'A5086198262', display_name: 'Yoshua Bengio' });
   });
 
   // ── Sidebar horizontal resize ──────────────────────────────────────────────
-  // Drag the handle to resize; the width snaps to the 260px sweet spot, and
+  // Drag the handle to resize; the width snaps to the 320px sweet spot, and
   // dragging below MIN (or clicking the handle) collapses the sidebar entirely.
   const SIDEBAR_WIDTH_KEY = 'sidebar_width_v1';
   (function initSidebarResize() {
     const sidebar = document.getElementById('sidebar');
     const resizer = document.getElementById('sidebar-resizer');
     if (!sidebar || !resizer) return;
-    const SWEET = 260, SNAP = 30, MIN = 140, MAX = 520;
+    const SWEET = 320, SNAP = 30, MIN = 260, MAX = 520;
 
     // While the width transition is animating (click-to-toggle path), an
     // immediate cy.resize() would cache mid-transition container dimensions;
@@ -2065,6 +2164,7 @@
         sidebar.classList.remove('collapsed');
         sidebar.style.width = w + 'px';
       }
+      document.getElementById('menu-toggle')?.setAttribute('aria-expanded', String(w !== 'collapsed'));
       if (sidebar.classList.contains('resizing')) cy.resize();
       else resizeAfterTransition();
     }
@@ -2142,6 +2242,12 @@
       document.body.classList.toggle('mobile-menu-open', open);
       graphBtn.classList.toggle('active', !open);
       menuBtn.classList.toggle('active', open);
+      graphBtn.setAttribute('aria-pressed', String(!open));
+      menuBtn.setAttribute('aria-pressed', String(open));
+      if (mq.matches) {
+        document.getElementById('sidebar').inert = !open;
+        document.getElementById('graph-area').inert = open;
+      }
       // Let the overlay's transform transition finish before remeasuring the graph.
       setTimeout(() => {
         cy.resize();
@@ -2157,6 +2263,8 @@
         setMenuOpen(false);   // entering mobile: show the graph first
       } else {
         document.body.classList.remove('mobile-menu-open');
+        document.getElementById('sidebar').inert = false;
+        document.getElementById('graph-area').inert = false;
         cy.resize();
       }
       // Crossing the mobile breakpoint changes the canvas width drastically.
@@ -2168,7 +2276,7 @@
   })();
 
   // ── Collapsible sidebar sections ───────────────────────────────────────────
-  const SECTIONS_KEY = 'sidebar_sections_v1';
+  const SECTIONS_KEY = 'sidebar_sections_v2';
   (function initSectionCollapse() {
     let saved = {};
     try { saved = JSON.parse(storage.get(SECTIONS_KEY) || '{}'); } catch { /* ignore */ }
@@ -2215,7 +2323,41 @@
     }
   }
 
-  // Restore any previously saved session on page load.
-  loadSavedState();
-  updateOverlays();
+  async function restoreMap() {
+    let shared;
+    try {
+      shared = window.GraphLinks?.decode(window.location.hash);
+    } catch {
+      loadSavedState();
+      showProgress('This shared map link is invalid. You can still start a new search.', true);
+      updateOverlays();
+      return;
+    }
+    if (!shared) {
+      loadSavedState();
+      updateOverlays();
+      return;
+    }
+    // From here, reloads restore the map the visitor actually edits and saves.
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    applySettings({ ...DEFAULT_SETTINGS,
+      edgeCoauthor: shared.edges.includes('coauthor'),
+      edgeCitation: shared.edges.includes('citation'),
+      edgeInstitution: shared.edges.includes('institution'),
+      workEdgeAuthorship: shared.workEdges.includes('authorship'),
+      workEdgeCitation: shared.workEdges.includes('citation'),
+      neighborhood: shared.neighborhood,
+    });
+    for (const origin of shared.origins) {
+      const status = await addResearcher({ id: origin.id, display_name: origin.name });
+      if (status !== 'done') break;
+    }
+    updateOverlays();
+  }
+  // Pasting a map link while already on this page is a fragment navigation.
+  // Reload so it follows the same bounded restore flow as a fresh visit.
+  window.addEventListener('hashchange', () => {
+    if (window.location.hash.startsWith('#map=')) window.location.reload();
+  });
+  restoreMap();
 })();
