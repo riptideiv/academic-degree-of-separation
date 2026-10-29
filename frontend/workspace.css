@@ -68,7 +68,7 @@ button:disabled { cursor:default; opacity:.45; }
 #progress-overlay { top:100px; background:var(--surface); border-radius:5px; box-shadow:0 4px 20px #243d360a; }
 #empty-state { background:var(--paper); }
 #empty-state-content { inset:81px 0 0; padding:36px; gap:0; }
-#empty-state h1 { font-family:inherit; font-size:40px; line-height:1.2; font-weight:550; letter-spacing:-1.2px; color:var(--ink); text-wrap:balance; }
+#empty-state h2 { font-family:inherit; font-size:40px; line-height:1.2; font-weight:550; letter-spacing:-1.2px; color:var(--ink); text-wrap:balance; }
 .empty-actions { display:flex; justify-content:center; flex-wrap:wrap; gap:12px; margin-top:30px; }
 #start-personal, #empty-example { display:inline-flex; align-items:center; justify-content:center; min-height:46px; padding:11px 18px; margin:0; border:1px solid var(--line); border-radius:5px; font:inherit; font-size:15px; color:var(--ink); background:var(--surface); }
 #start-personal { color:#fff; background:var(--green-900); border-color:var(--green-900); }
@@ -108,7 +108,7 @@ button:disabled { cursor:default; opacity:.45; }
   .workspace-actions button { font-size:11px; min-height:36px; padding:7px 5px; }
   #cy { top:108px; height:calc(100% - 108px); }
   #empty-state-content { inset:64px 0 0; padding:28px 20px 100px; }
-  #empty-state h1 { max-width:320px; font-size:34px; }
+  #empty-state h2 { max-width:320px; font-size:34px; }
   .empty-actions { flex-direction:column; width:min(280px,100%); margin-top:26px; }
   #progress-overlay { top:120px; }
   #next-step { top:120px; flex-wrap:wrap; justify-content:center; gap:4px; text-align:center; }
