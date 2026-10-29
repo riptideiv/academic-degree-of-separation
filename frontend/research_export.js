@@ -17,7 +17,7 @@
 
   function report({ origins = [], paths = [] }, date = new Date()) {
     const lines = [
-      '# Six Degrees of Academia — connection report', '',
+      '# Coauthor Atlas — connection report', '',
       `Exported ${date.toISOString()}`, '',
       'Source: [OpenAlex](https://openalex.org/). Paths come from a bounded search of the available graph; a missing path does not prove there is no connection.',
       'Affiliations reflect the source records and may not be current appointments.', '',

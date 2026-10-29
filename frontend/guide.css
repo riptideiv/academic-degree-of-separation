@@ -1,10 +1,10 @@
 :root {
   color-scheme: light;
-  --ink: #183c2b;
-  --muted: #52655a;
-  --paper: #fafaf5;
-  --line: #d8e2d7;
-  --green: #276442;
+  --ink: #243d36;
+  --muted: #61685f;
+  --paper: #f8f6f0;
+  --line: #d9ddd2;
+  --green: #3c6451;
 }
 * { box-sizing: border-box; }
 html { scroll-padding-top: 24px; }
